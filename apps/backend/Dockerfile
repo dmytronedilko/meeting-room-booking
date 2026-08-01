@@ -40,7 +40,12 @@ RUN node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('./packag
   && npx prisma generate --schema ./prisma/schema.prisma \
   && printf '%s\n' "import { defineConfig } from 'prisma/config';" "export default defineConfig({ schema: 'prisma/schema.prisma', datasource: { url: process.env.DATABASE_URL ?? '' } });" > prisma.config.ts \
   && npm cache clean --force \
-  && chmod +x ./docker-entrypoint.sh
+  && chmod +x ./docker-entrypoint.sh \
+  # Harden the runtime image by removing npm/corepack — build-time-only tooling.
+  # Their bundled deps (tar, pacote, sigstore, brace-expansion, picomatch) would
+  # otherwise ship as image CVEs; the entrypoint runs prisma directly, not via npx.
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 EXPOSE 3001
 # Applies migrations and the demo seed, then starts the API.

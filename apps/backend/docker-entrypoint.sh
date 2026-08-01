@@ -2,7 +2,8 @@
 set -e
 
 echo "Applying database migrations..."
-npx prisma migrate deploy --schema ./prisma/schema.prisma
+# Call the prisma binary directly — npm/npx is stripped from the runtime image.
+./node_modules/.bin/prisma migrate deploy --schema ./prisma/schema.prisma
 
 echo "Seeding demo data..."
 node seed.js

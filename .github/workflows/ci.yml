@@ -184,15 +184,15 @@ jobs:
           name: coverage
           path: coverage
       - name: SonarQube scan
-        if: ${{ env.SONAR_TOKEN != '' }}
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
         uses: SonarSource/sonarqube-scan-action@v8 # reads sonar-project.properties
       - name: SonarQube Quality Gate
-        if: ${{ env.SONAR_TOKEN != '' }}
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
         uses: SonarSource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
-      - name: Skipped (no token)
-        if: ${{ env.SONAR_TOKEN == '' }}
-        run: echo "::notice::SONAR_TOKEN not set — skipping SonarQube (fork PR or secret missing)."
+      - name: Skipped (no token / host)
+        if: ${{ env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == '' }}
+        run: echo "::notice::SONAR_TOKEN/SONAR_HOST_URL not fully set — skipping SonarQube."
 
   codeql:
     name: SAST (CodeQL)

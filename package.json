@@ -5,6 +5,7 @@
   "license": "MIT",
   "scripts": {
     "postinstall": "prisma generate --schema apps/backend/prisma/schema.prisma",
+    "prepare": "git config core.hooksPath .githooks || true",
     "prisma:migrate": "prisma migrate deploy --schema apps/backend/prisma/schema.prisma",
     "seed": "npx nx run backend:seed",
     "lint": "biome check .",

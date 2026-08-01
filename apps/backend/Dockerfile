@@ -28,10 +28,17 @@ COPY --from=build /workspace/dist/apps/backend ./
 COPY apps/backend/prisma ./prisma
 COPY apps/backend/docker-entrypoint.sh ./docker-entrypoint.sh
 
-RUN rm -f package-lock.json \
+# Nx's generatePackageJson drops the root `overrides`, so re-add the
+# @fastify/static pin here (see root package.json): @nestjs/platform-fastify@11
+# declares a stale peerOptional range (^8||^9) that would otherwise fail this
+# install with ERESOLVE. Setting it to the pruned exact version keeps it a valid
+# override for the direct dependency.
+RUN node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('./package.json'));p.overrides={...(p.overrides||{}),'@fastify/static':p.dependencies['@fastify/static']};fs.writeFileSync('./package.json',JSON.stringify(p,null,2)+'\n');" \
+  && rm -f package-lock.json \
   && npm install --omit=dev --no-audit --no-fund \
-  && npm install --no-save --no-audit --no-fund prisma@5.22.0 \
+  && npm install --no-save --no-audit --no-fund prisma@7.9.1 \
   && npx prisma generate --schema ./prisma/schema.prisma \
+  && printf '%s\n' "import { defineConfig } from 'prisma/config';" "export default defineConfig({ schema: 'prisma/schema.prisma', datasource: { url: process.env.DATABASE_URL ?? '' } });" > prisma.config.ts \
   && npm cache clean --force \
   && chmod +x ./docker-entrypoint.sh
 

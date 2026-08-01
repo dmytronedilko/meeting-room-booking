@@ -208,7 +208,9 @@ push/pull uses the built-in `GITHUB_TOKEN` — the build/E2E jobs already reques
 
 Dynamic analysis (**DAST**) is intentionally kept off the per-PR pipeline:
 `.github/workflows/dast.yml` runs an OWASP ZAP baseline scan against the full
-Docker stack nightly (and on demand via *Run workflow*).
+Docker stack nightly (and on demand via *Run workflow*). A weekly
+`.github/workflows/ghcr-cleanup.yml` prunes old SHA-tagged images from GHCR
+(keeps the newest 10 per image; also runs on demand).
 
 ## Test accounts (seed)
 

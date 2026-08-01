@@ -129,6 +129,9 @@ jobs:
           file: apps/backend/Dockerfile
           push: true
           tags: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          # Links the GHCR package to this repo so GITHUB_TOKEN can manage/prune it.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha,scope=backend
           cache-to: type=gha,scope=backend,mode=max
       - name: Build & push frontend image
@@ -140,6 +143,8 @@ jobs:
             NEXT_PUBLIC_API_URL=/api
           push: true
           tags: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
 

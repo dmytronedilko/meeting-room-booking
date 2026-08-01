@@ -1,0 +1,41 @@
+name: GHCR cleanup
+
+# CI pushes a commit-SHA-tagged backend + frontend image to GHCR on every run, so
+# versions accumulate. This prunes old ones weekly (keeping the newest N per image)
+# to keep the registry tidy. Runs on a schedule and on demand.
+on:
+  schedule:
+    - cron: '0 4 * * 0' # Sundays, 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: 'Most-recent versions to keep per image'
+        default: '10'
+
+permissions:
+  packages: write # delete old package versions
+
+concurrency:
+  group: ghcr-cleanup
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Prune ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # attempt both images even if one fails
+      matrix:
+        image: [meeting-room-booking-backend, meeting-room-booking-frontend]
+    steps:
+      - name: Delete old versions of ${{ matrix.image }}
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: ${{ github.repository_owner }}
+          package-name: ${{ matrix.image }}
+          package-type: container
+          min-versions-to-keep: ${{ github.event.inputs.keep || '10' }}
+          # GITHUB_TOKEN works once the package is linked to this repo (the CI build
+          # sets the org.opencontainers.image.source label). If a package stays
+          # user-scoped, add a PAT secret GHCR_CLEANUP_TOKEN with delete:packages.
+          token: ${{ secrets.GHCR_CLEANUP_TOKEN || secrets.GITHUB_TOKEN }}

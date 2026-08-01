@@ -1,0 +1,13 @@
+node_modules
+dist
+tmp
+coverage
+.nx
+.next
+.git
+.idea
+.vscode
+*.log
+.env
+.env.*
+!/.env.example

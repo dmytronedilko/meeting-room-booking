@@ -10,11 +10,21 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege by default; the CodeQL job widens its own scope below.
+permissions:
+  contents: read
+
 env:
   NODE_VERSION: '22'
   NX_DAEMON: 'false'
 
 jobs:
+  # ── Fast fallback gates ──────────────────────────────────────────────────
+  # These duplicate the local pre-commit / commit-msg hooks so a `--no-verify`
+  # bypass is still caught here. They run first and in parallel; the expensive
+  # jobs below are gated behind `lint` → `unit` so a cheap failure stops the
+  # pipeline before it spends minutes on integration/e2e.
+
   lint:
     name: Lint (Biome)
     runs-on: ubuntu-latest
@@ -27,6 +37,60 @@ jobs:
       - run: npm ci
       - run: npx nx run-many -t lint
 
+  secrets:
+    name: Secrets (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the whole push/PR range is scanned
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Free for public repos — no GITLEAKS_LICENSE needed.
+          # Config (allowlists) is read from .gitleaks.toml automatically.
+
+  commitlint:
+    name: Commit messages
+    # Only PRs have a well-defined commit range to validate.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate commit subjects (Conventional Commits)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Same rules as the local .githooks/commit-msg (shared script).
+          subjects="${RUNNER_TEMP:-/tmp}/commit-subjects.txt"
+          git log --no-merges --format=%s "${BASE_SHA}..${HEAD_SHA}" > "$subjects"
+          echo "Validating $(wc -l < "$subjects") commit(s) in ${BASE_SHA}..${HEAD_SHA}"
+          rc=0
+          # Read from a file (not a pipe) so rc survives the loop.
+          while IFS= read -r subject; do
+            [ -z "$subject" ] && continue
+            sh scripts/lint-commit-msg.sh "$subject" || rc=1
+          done < "$subjects"
+          exit $rc
+
+  # ── Heavy lifting ────────────────────────────────────────────────────────
+
+  build:
+    name: Build
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npx nx run-many -t build
+
   unit:
     name: Unit tests
     needs: lint
@@ -38,7 +102,36 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - run: npx nx run-many -t test
+      - name: Unit tests with coverage
+        # CI=true (set by GitHub Actions) turns on vitest coverage — see the
+        # coverage block in each apps/*/vitest.config.ts and libs/*/vitest.config.ts.
+        run: npx nx run-many -t test
+      - name: Upload coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  codeql:
+    name: SAST (CodeQL)
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      # JS/TS needs no build step for CodeQL.
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'
 
   integration:
     name: Integration tests (API + Postgres)

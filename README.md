@@ -156,18 +156,48 @@ the real app in a browser and expects the full stack reachable at `E2E_BASE_URL`
 (default `http://localhost`); bring it up with
 `docker compose up -d --wait db backend frontend proxy`.
 
+### Git hooks (local, fast)
+
+Hooks live in `.githooks/` and are activated automatically by the `prepare`
+script on `npm install` (`git config core.hooksPath .githooks`). They finish in
+seconds and only do fast, staged-file work — everything heavier is left to CI:
+
+- **pre-commit** — Biome format + safe lint fixes on staged files (auto-fixed and
+  re-staged), a trailing-whitespace / conflict-marker check (`git diff --check`),
+  and a staged-only secret scan with
+  [gitleaks](https://github.com/gitleaks/gitleaks) when installed
+  (`brew install gitleaks`; skipped with a note otherwise).
+- **commit-msg** — validates the subject against Conventional Commits via
+  `scripts/lint-commit-msg.sh` (the same script CI uses).
+
+Bypass in a pinch with `git commit --no-verify` — CI re-runs every one of these
+checks (below), so nothing slips through.
+
 ### CI (GitHub Actions)
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request as
-four parallel jobs:
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request.
+The fast fallback gates run first and in parallel; the expensive jobs are chained
+behind them (`lint` → `unit` → `integration` → `e2e`) so a cheap failure stops
+the run before it spends minutes downstream. Every local hook check is duplicated
+here, so a `--no-verify` commit is still caught.
 
-- **Lint** — `nx run-many -t lint` (Biome).
-- **Unit tests** — `nx run-many -t test`.
+- **Lint (Biome)** — `nx run-many -t lint` (fallback for the pre-commit Biome step).
+- **Secrets (gitleaks)** — scans the push/PR range (fallback for the pre-commit scan).
+- **Commit messages** — validates every commit subject in the PR with
+  `scripts/lint-commit-msg.sh` (fallback for the commit-msg hook).
+- **Build** — `nx run-many -t build` (backend + frontend).
+- **Unit tests** — `nx run-many -t test`; coverage is collected (v8) and uploaded
+  as an artifact.
+- **SAST (CodeQL)** — static analysis for JavaScript/TypeScript.
 - **Integration** — `test:integration` against a Postgres service seeded with the
   `booking_test` database.
 - **E2E** — builds and boots the Docker stack (`db`, `backend`, `frontend`,
   `proxy`), then runs Playwright against the Nginx proxy; the HTML report is
   uploaded as a build artifact.
+
+Dynamic analysis (**DAST**) is intentionally kept off the per-PR pipeline:
+`.github/workflows/dast.yml` runs an OWASP ZAP baseline scan against the full
+Docker stack nightly (and on demand via *Run workflow*).
 
 ## Test accounts (seed)
 

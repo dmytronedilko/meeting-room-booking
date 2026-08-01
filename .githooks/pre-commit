@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# Pre-commit: runs the fast CI checks locally so failures surface before a commit.
+#   • Biome lint + format   → CI "Lint" job
+#   • unit tests            → CI "Unit tests" job
+#
+# Integration (needs Postgres) and E2E (needs the Docker stack) are intentionally
+# left out — too slow / service-dependent for every commit. CI still runs them,
+# and a pre-push hook is the right place for heavier checks if you want them.
+#
+# Enabled via core.hooksPath=.githooks, set by the "prepare" npm script on
+# install (or run `git config core.hooksPath .githooks` manually).
+# Bypass in a pinch with `git commit --no-verify`.
+
+set -e
+
+if ! command -v npx >/dev/null 2>&1; then
+  echo "pre-commit: Node/npx not on PATH — skipping local checks (try 'nvm use'). CI still runs them." >&2
+  exit 0
+fi
+
+echo "▶ pre-commit: Biome lint + format…"
+npx nx run-many -t lint
+
+echo "▶ pre-commit: unit tests…"
+npx nx run-many -t test
+
+echo "✓ pre-commit checks passed."

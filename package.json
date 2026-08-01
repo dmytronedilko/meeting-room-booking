@@ -16,6 +16,9 @@
   "engines": {
     "node": ">=20"
   },
+  "overrides": {
+    "@fastify/static": "$@fastify/static"
+  },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
     "@fastify/static": "^10.1.2",

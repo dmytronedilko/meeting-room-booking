@@ -1,0 +1,47 @@
+# Ships docker container logs of this compose project to Elasticsearch.
+# The backend writes structured JSON (pino), which is lifted to event root
+# fields; other services (nginx, postgres, ...) arrive as plain messages.
+
+filebeat.inputs:
+  - type: container
+    paths:
+      - /var/lib/docker/containers/*/*.log
+
+processors:
+  - add_docker_metadata:
+      host: unix:///var/run/docker.sock
+
+  # Keep only containers belonging to this compose project.
+  - drop_event:
+      when:
+        not:
+          equals:
+            container.labels.com_docker_compose_project: meeting-room-booking
+
+  # Don't ingest the log pipeline's own noise.
+  - drop_event:
+      when:
+        or:
+          - equals:
+              container.labels.com_docker_compose_service: filebeat
+          - equals:
+              container.labels.com_docker_compose_service: kibana-init
+
+  # Backend logs are pino JSON — parse them into root fields
+  # (level, msg, req.*, res.*, responseTime, ...). Non-JSON lines are kept as-is.
+  - decode_json_fields:
+      fields: ['message']
+      target: ''
+      overwrite_keys: true
+      add_error_key: false
+      max_depth: 2
+
+output.elasticsearch:
+  hosts: ['http://elasticsearch:9200']
+
+setup.template.settings:
+  # Single-node local cluster: no replicas, keep the index green.
+  index.number_of_replicas: 0
+
+logging.level: warning
+logging.metrics.enabled: false

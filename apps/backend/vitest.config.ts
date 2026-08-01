@@ -1,0 +1,30 @@
+import { resolve } from 'node:path';
+import swc from 'unplugin-swc';
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  root: __dirname,
+  cacheDir: '../../node_modules/.vite/apps/backend',
+  plugins: [
+    // SWC is required so that NestJS decorators and emitDecoratorMetadata work.
+    swc.vite({
+      module: { type: 'es6' },
+      jsc: {
+        target: 'es2021',
+        parser: { syntax: 'typescript', decorators: true },
+        transform: { legacyDecorator: true, decoratorMetadata: true },
+      },
+    }),
+  ],
+  resolve: {
+    alias: {
+      '@office/shared': resolve(__dirname, '../../libs/shared/src/index.ts'),
+    },
+  },
+  test: {
+    globals: true,
+    environment: 'node',
+    include: ['src/**/*.spec.ts'],
+    reporters: ['default'],
+  },
+});

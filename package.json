@@ -18,7 +18,11 @@
     "node": ">=20"
   },
   "overrides": {
-    "@fastify/static": "$@fastify/static"
+    "@fastify/static": "$@fastify/static",
+    "find-my-way": "^9.7.0",
+    "js-yaml": "^5.2.2",
+    "postcss": "$postcss",
+    "sharp": "^0.35.0"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

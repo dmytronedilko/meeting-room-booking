@@ -1,0 +1,17 @@
+# gitleaks configuration — used by the local pre-commit scan and the CI "Secrets"
+# job. Extends the built-in ruleset and allowlists this repo's committed dev
+# placeholders so legitimate example values don't trip the scan.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Committed dev placeholders — not real secrets"
+# .env.example ships intentional placeholder values.
+paths = [
+  '''\.env\.example$''',
+]
+# The dev-only defaults also appear in docker-compose.yml, CI and the README.
+regexes = [
+  '''change-me-in-production''',
+  '''postgres:postgres@''',
+]

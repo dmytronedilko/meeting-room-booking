@@ -156,18 +156,61 @@ the real app in a browser and expects the full stack reachable at `E2E_BASE_URL`
 (default `http://localhost`); bring it up with
 `docker compose up -d --wait db backend frontend proxy`.
 
+### Git hooks (local, fast)
+
+Hooks live in `.githooks/` and are activated automatically by the `prepare`
+script on `npm install` (`git config core.hooksPath .githooks`). They finish in
+seconds and only do fast, staged-file work — everything heavier is left to CI:
+
+- **pre-commit** — Biome format + safe lint fixes on staged files (auto-fixed and
+  re-staged), a trailing-whitespace / conflict-marker check (`git diff --check`),
+  and a staged-only secret scan with
+  [gitleaks](https://github.com/gitleaks/gitleaks) when installed
+  (`brew install gitleaks`; skipped with a note otherwise).
+- **commit-msg** — validates the subject against Conventional Commits via
+  `scripts/lint-commit-msg.sh` (the same script CI uses).
+
+Bypass in a pinch with `git commit --no-verify` — CI re-runs every one of these
+checks (below), so nothing slips through.
+
 ### CI (GitHub Actions)
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request as
-four parallel jobs:
+`.github/workflows/ci.yml` is a 5-stage DevSecOps pipeline (every push to `main`
+and every pull request). Stages run in strict sequence; jobs **within** a stage run
+in parallel. Every local hook check is duplicated in Stage 1, so a `--no-verify`
+commit is still caught.
 
-- **Lint** — `nx run-many -t lint` (Biome).
-- **Unit tests** — `nx run-many -t test`.
-- **Integration** — `test:integration` against a Postgres service seeded with the
-  `booking_test` database.
-- **E2E** — builds and boots the Docker stack (`db`, `backend`, `frontend`,
-  `proxy`), then runs Playwright against the Nginx proxy; the HTML report is
-  uploaded as a build artifact.
+1. **Sanity & Dependencies** — `Lint (Biome)`, `Secrets (gitleaks)`,
+   `Commit messages` (`scripts/lint-commit-msg.sh`) and `SCA (Snyk)` — Snyk Open
+   Source scanning of `package.json` dependencies.
+2. **Build & Unit** — `Build & push images` builds the backend + frontend Docker
+   images **once** and pushes them to GHCR tagged with the commit SHA;
+   `Unit tests` runs Vitest with v8 coverage and uploads `lcov` as an artifact.
+3. **Deep Analysis** (parallel) — `Quality (SonarQube)` downloads the coverage
+   artifact and enforces the Quality Gate; `SAST (CodeQL)` scans JS/TS;
+   `Container scan (Snyk)` pulls the Stage-2 backend image and scans its OS /
+   base-image layers.
+4. **Integration** — `test:integration` against a Postgres service, after all of
+   Stage 3 passes.
+5. **E2E** — **pulls** the pre-built images from GHCR (no rebuild), boots the Docker
+   stack (`db`, `backend`, `frontend`, `proxy`) and runs Playwright; the HTML report
+   is uploaded as an artifact.
+
+The image is built once (Stage 2) and reused by the container scan and E2E, so no
+build runs twice. The external scanners are **guarded**: they enforce when their
+secret is present and skip cleanly (green, with a notice) when it isn't — so fork
+PRs and pre-secret runs stay healthy.
+
+**Required for enforcement** (*Settings → Secrets and variables → Actions*):
+`SNYK_TOKEN`, `SONAR_TOKEN`, `SONAR_HOST_URL` (e.g. `https://sonarcloud.io`). GHCR
+push/pull uses the built-in `GITHUB_TOKEN` — the build/E2E jobs already request the
+`packages` scope explicitly, so no repository-wide permission change is required.
+
+Dynamic analysis (**DAST**) is intentionally kept off the per-PR pipeline:
+`.github/workflows/dast.yml` runs an OWASP ZAP baseline scan against the full
+Docker stack nightly (and on demand via *Run workflow*). A weekly
+`.github/workflows/ghcr-cleanup.yml` prunes old SHA-tagged images from GHCR
+(keeps the newest 10 per image; also runs on demand).
 
 ## Test accounts (seed)
 

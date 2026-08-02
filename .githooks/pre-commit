@@ -1,16 +1,19 @@
 #!/bin/sh
 #
-# Pre-commit: runs the fast CI checks locally so failures surface before a commit.
-#   • Biome lint + format   → CI "Lint" job
-#   • unit tests            → CI "Unit tests" job
+# Pre-commit: only the fast, staged-file checks — it must finish in seconds.
+# Everything here is ALSO enforced in CI (.github/workflows/ci.yml), so a
+# `git commit --no-verify` bypass is still caught server-side.
 #
-# Integration (needs Postgres) and E2E (needs the Docker stack) are intentionally
-# left out — too slow / service-dependent for every commit. CI still runs them,
-# and a pre-push hook is the right place for heavier checks if you want them.
+#   • Biome format + safe lint fixes (staged files)  → CI "Lint" job
+#   • trailing-whitespace / conflict-marker net       → CI "Lint" job
+#   • secret scan (staged, if gitleaks installed)     → CI "Secrets" job
+# Commit-message shape is validated separately in .githooks/commit-msg.
+#
+# Heavy work (unit/integration/e2e tests, builds, coverage, SAST/DAST) lives in
+# CI only — never in this hook.
 #
 # Enabled via core.hooksPath=.githooks, set by the "prepare" npm script on
 # install (or run `git config core.hooksPath .githooks` manually).
-# Bypass in a pinch with `git commit --no-verify`.
 
 set -e
 
@@ -19,10 +22,28 @@ if ! command -v npx >/dev/null 2>&1; then
   exit 0
 fi
 
-echo "▶ pre-commit: Biome lint + format…"
-npx nx run-many -t lint
+echo "▶ pre-commit: Biome (format + safe lint fixes) on staged files…"
+# Fix formatting + safe lint issues on the staged files, then re-stage the fixes.
+# Any remaining (unfixable) lint error makes biome exit non-zero and blocks the commit.
+npx biome check --staged --write --no-errors-on-unmatched
+# Re-stage the files Biome may have rewritten. Guarded so xargs never runs on an
+# empty list (portable across BSD/GNU xargs); -z/-0 keeps odd filenames safe.
+# Caveat: for a file staged with extra unstaged edits, this folds those in too —
+# the usual lint-staged trade-off, accepted here for simplicity.
+if [ -n "$(git diff --cached --name-only --diff-filter=ACM)" ]; then
+  git diff --cached --name-only -z --diff-filter=ACM | xargs -0 git add --
+fi
 
-echo "▶ pre-commit: unit tests…"
-npx nx run-many -t test
+echo "▶ pre-commit: whitespace check…"
+# Trailing whitespace / leftover conflict markers on files Biome doesn't format
+# (Markdown, YAML, shell, …). Non-mutating: it rejects and the dev fixes.
+git diff --cached --check
+
+echo "▶ pre-commit: secret scan…"
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --redact --no-banner
+else
+  echo "  gitleaks not installed — skipping local secret scan (CI still runs it)." >&2
+fi
 
 echo "✓ pre-commit checks passed."

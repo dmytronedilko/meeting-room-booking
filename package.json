@@ -18,7 +18,11 @@
     "node": ">=20"
   },
   "overrides": {
-    "@fastify/static": "$@fastify/static"
+    "@fastify/static": "$@fastify/static",
+    "find-my-way": "^9.7.0",
+    "js-yaml": "^5.2.2",
+    "postcss": "$postcss",
+    "sharp": "^0.35.0"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
@@ -92,6 +96,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@types/supertest": "^7.2.1",
+    "@vitest/coverage-v8": "^4.1.10",
     "autoprefixer": "^10.4.20",
     "nx": "^23.1.1",
     "pino-pretty": "^13.1.3",

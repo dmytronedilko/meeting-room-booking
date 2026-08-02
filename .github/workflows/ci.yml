@@ -15,7 +15,9 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: '22'
+  # Keep in step with the Dockerfiles' `node:<major>-alpine` base image, so CI
+  # builds and tests on the same Node major the images actually ship.
+  NODE_VERSION: '26'
   NX_DAEMON: 'false'
   # Images are built once in Stage 2 and pushed to GHCR under the commit SHA, then
   # pulled by the container scan (Stage 3) and E2E (Stage 5) — no image is built twice.

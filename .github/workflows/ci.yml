@@ -15,9 +15,9 @@ permissions:
   contents: read
 
 env:
-  # Keep in step with the Dockerfiles' `node:<major>-alpine` base image, so CI
-  # builds and tests on the same Node major the images actually ship.
-  NODE_VERSION: '26'
+  # Pinned to the exact Node the Dockerfiles use (`node:26.5.1-alpine`) so CI,
+  # the images, and `.nvmrc` all build/test/ship on the identical version.
+  NODE_VERSION: '26.5.1'
   NX_DAEMON: 'false'
   # Images are built once in Stage 2 and pushed to GHCR under the commit SHA, then
   # pulled by the container scan (Stage 3) and E2E (Stage 5) — no image is built twice.
@@ -259,7 +259,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.14-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

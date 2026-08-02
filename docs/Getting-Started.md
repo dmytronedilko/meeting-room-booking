@@ -14,7 +14,7 @@ There are two ways to run it — pick one:
 
 | Tool | Version | Notes |
 | --- | --- | --- |
-| **Node.js** | `>= 20` | Managed via [`nvm`](https://github.com/nvm-sh/nvm) is recommended (`nvm install 20 && nvm use 20`) |
+| **Node.js** | `>= 20` (repo pins **26.5.1** via `.nvmrc`) | Managed via [`nvm`](https://github.com/nvm-sh/nvm) is recommended — `nvm install && nvm use` reads `.nvmrc` |
 | **npm** | bundled with Node | Used for install & scripts |
 | **Docker** + **Docker Compose** | recent | Required for Path A; Path B still uses it for Postgres |
 | **git** | any | Hooks are wired up automatically on `npm install` |
@@ -222,7 +222,7 @@ nothing slips through. See **[Code Style](Code-Style)** for the rules.
 | Login works but booking returns **403** | Email not confirmed — open the confirmation link printed in the **backend log**, or use a seeded (pre-confirmed) account |
 | Frontend calls the wrong API URL | `NEXT_PUBLIC_API_URL` is baked at build time — change `.env` and restart/rebuild the frontend |
 | Port already in use (`3000`/`3001`/`5432`) | Another instance is running — stop it, or change `PORT` / the Compose port mapping |
-| `node: command not found` | Node isn't on `PATH` — select it via your version manager first (e.g. `nvm use 20`) |
+| `node: command not found` | Node isn't on `PATH` — select it via your version manager first (e.g. `nvm use`, which reads `.nvmrc`) |
 | Commit rejected by `commit-msg` hook | Subject isn't Conventional Commits — see [Code Style → Commits](Code-Style#-commit-messages-conventional-commits) |
 
 Next: **[Architecture](Architecture)** · **[Code Style](Code-Style)**

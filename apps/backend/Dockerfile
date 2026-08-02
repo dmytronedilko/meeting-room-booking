@@ -1,5 +1,5 @@
 # ---------- Stage 1: install workspace dependencies ----------
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /workspace
 COPY package.json package-lock.json ./
 # The postinstall hook runs `prisma generate`, which needs the schema.
@@ -13,7 +13,7 @@ COPY . .
 RUN npx nx build backend --configuration=production
 
 # ---------- Stage 3: compact runtime image ----------
-FROM node:22-alpine AS runner
+FROM node:26-alpine AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 

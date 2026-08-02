@@ -120,6 +120,7 @@ For hot-reload dev mode and the `.env` reference, see **[Getting Started](Gettin
 | **[Architecture](Architecture)** | System topology, request flow, DB schema, module design, key decisions |
 | **[Code Style](Code-Style)** | Biome config, TypeScript & comment conventions, Conventional Commits, branching |
 | **[API Reference](API-Reference)** | REST endpoints, auth, request/response shapes, error format |
+| **[Decision Log](Decision-Log)** | ADRs — key architecture & process decisions, with alternatives & trade-offs |
 
 ### In-repo references
 

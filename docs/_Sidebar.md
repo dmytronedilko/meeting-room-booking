@@ -7,6 +7,7 @@
 - [🧱 Architecture](Architecture)
 - [🎨 Code Style](Code-Style)
 - [🔌 API Reference](API-Reference)
+- [🧭 Decision Log](Decision-Log)
 
 **Quick jumps**
 - [Getting Started → `.env`](Getting-Started#-environment-variables)
@@ -14,6 +15,7 @@
 - [Architecture → DB schema](Architecture#-database-schema)
 - [Code Style → Commits](Code-Style#-commit-messages-conventional-commits)
 - [API → Endpoint index](API-Reference#-endpoint-index)
+- [Decisions → index](Decision-Log#index)
 
 **Local surfaces**
 - App — `http://localhost`

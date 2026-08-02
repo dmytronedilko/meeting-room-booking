@@ -95,10 +95,11 @@ jobs:
       - run: npm ci
       - name: Snyk Open Source (SCA) test
         # SCA only — scans package.json/lock dependencies. NOT Snyk Code (SAST).
+        # Gate on CRITICAL severity only (team policy); high/medium/low are non-blocking.
         if: ${{ env.SNYK_TOKEN != '' }}
         run: |
           npm install -g snyk
-          snyk test --severity-threshold=high
+          snyk test --severity-threshold=critical
       - name: Skipped (no token)
         if: ${{ env.SNYK_TOKEN == '' }}
         run: echo "::notice::SNYK_TOKEN not set — skipping Snyk SCA (fork PR or secret missing)."
@@ -237,12 +238,13 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Snyk Container test (backend image)
         # Scans the OS packages + base image of the image built in Stage 2.
+        # Gate on CRITICAL severity only (team policy); high/medium/low are non-blocking.
         if: ${{ env.SNYK_TOKEN != '' }}
         run: |
           docker pull "${BACKEND_IMAGE}:${GITHUB_SHA}"
           npm install -g snyk
           snyk container test "${BACKEND_IMAGE}:${GITHUB_SHA}" \
-            --file=apps/backend/Dockerfile --severity-threshold=high
+            --file=apps/backend/Dockerfile --severity-threshold=critical
       - name: Skipped (no token)
         if: ${{ env.SNYK_TOKEN == '' }}
         run: echo "::notice::SNYK_TOKEN not set — skipping Snyk Container scan (fork PR or secret missing)."

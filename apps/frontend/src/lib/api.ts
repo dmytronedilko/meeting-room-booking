@@ -16,7 +16,7 @@ import type {
 
 import { clearUser, getStoredUser } from './auth';
 
-/** Relative `/api` in Docker (single origin behind Nginx), absolute URL in dev. */
+/** Relative `/api` in Docker (single origin behind Traefik), absolute URL in dev. */
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
 export class ApiError extends Error {

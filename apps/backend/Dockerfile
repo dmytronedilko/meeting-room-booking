@@ -1,5 +1,5 @@
 # ---------- Stage 1: install workspace dependencies ----------
-FROM node:22-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /workspace
 COPY package.json package-lock.json ./
 # The postinstall hook runs `prisma generate`, which needs the schema.
@@ -13,7 +13,7 @@ COPY . .
 RUN npx nx build backend --configuration=production
 
 # ---------- Stage 3: compact runtime image ----------
-FROM node:22-alpine AS runner
+FROM node:26-alpine AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 
@@ -46,6 +46,11 @@ RUN node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('./packag
   # otherwise ship as image CVEs; the entrypoint runs prisma directly, not via npx.
   && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
     /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+
+# Drop to the unprivileged user baked into the node image (matches the frontend
+# image). The runtime only reads /app, reaches Postgres, and listens on 3001 —
+# none of which needs root; migrations/seed run over the network, not on disk.
+USER node
 
 EXPOSE 3001
 # Applies migrations and the demo seed, then starts the API.

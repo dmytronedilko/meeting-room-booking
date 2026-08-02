@@ -20,7 +20,7 @@ decisions worth knowing before you change anything.
 
 ## 🗺️ System topology
 
-Everything runs as a single Docker Compose project. **Nginx is the only entry
+Everything runs as a single Docker Compose project. **Traefik is the only entry
 point** (`:80`); the frontend and backend ports are **not** published to the
 host — all application traffic goes through the proxy. Prometheus, Grafana, and
 Kibana publish their own ports directly for local tooling.
@@ -30,7 +30,8 @@ flowchart LR
     Browser(["Browser"])
 
     subgraph net["Docker Compose network"]
-        Proxy["Nginx proxy<br/>:80 — single entry point"]
+        Proxy["Traefik proxy<br/>:80 — single entry point"]
+        SP["socket-proxy<br/>read-only Docker API"]
         FE["frontend<br/>Next.js standalone :3000"]
         BE["backend<br/>NestJS :3001"]
         DB[("PostgreSQL 16<br/>booking / booking_test")]
@@ -46,6 +47,8 @@ flowchart LR
     Proxy -- "everything else" --> FE
     BE -- "Prisma / pg adapter" --> DB
     Prom -- "scrape backend:3001/metrics (10s)" --> BE
+    Prom -- "scrape traefik:8082/metrics (10s)" --> Proxy
+    Proxy -. "discovers routes (ro)" .-> SP
     Graf -- "PromQL" --> Prom
     BE -- "pino JSON → stdout" --> FB
     FB -- "parsed events" --> ES
@@ -67,8 +70,9 @@ dependency that isn't ready:
 flowchart LR
     db["db (healthy)"] --> backend["backend<br/>migrate deploy → seed → listen"]
     backend -- "healthy" --> frontend
-    backend -- "healthy" --> proxy
-    frontend -- "started" --> proxy
+    backend -- "healthy" --> traefik
+    frontend -- "started" --> traefik
+    socketProxy["socket-proxy"] -- "started" --> traefik
     prometheus --> grafana
     elasticsearch -- "healthy" --> kibana
     elasticsearch -- "healthy" --> filebeat
@@ -83,15 +87,15 @@ A typical authenticated write — creating a booking — from click to persisten
 sequenceDiagram
     autonumber
     participant B as Browser (TanStack Query)
-    participant N as Nginx :80
+    participant T as Traefik :80
     participant G as JwtAuthGuard (global)
     participant C as BookingsController
     participant S as BookingsService
     participant P as Prisma (pg adapter)
     participant D as PostgreSQL
 
-    B->>N: POST /api/bookings  (session cookie)
-    N->>G: proxy /api/* → backend:3001
+    B->>T: POST /api/bookings  (session cookie)
+    T->>G: proxy /api/* → backend:3001
     G->>G: verify JWT (cookie or Bearer)
     G-->>B: 401 if missing/invalid
     G->>C: attach current user
@@ -120,7 +124,7 @@ apps/
 libs/
   shared/      Shared types, API DTO contracts, and domain constants
 infra/
-  nginx/       Reverse-proxy config (single entry point)
+  traefik/     Reverse-proxy config (single entry point)
   prometheus/  Scrape config
   grafana/     Datasource + dashboard provisioning, dashboard JSON
   elk/         Filebeat config + Kibana data-view provisioning

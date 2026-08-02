@@ -8,6 +8,13 @@ scrape_configs:
     static_configs:
       - targets: ['backend:3001']
 
+  - job_name: traefik
+    # Traefik's native Prometheus metrics, served on its dedicated `metrics`
+    # entrypoint (see infra/traefik/traefik.yml). Not published to the host —
+    # scraped over the Docker network.
+    static_configs:
+      - targets: ['traefik:8082']
+
   - job_name: prometheus
     static_configs:
       - targets: ['localhost:9090']

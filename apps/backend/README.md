@@ -3,7 +3,7 @@
 The booking API: JWT auth, rooms, bookings with database-level overlap
 protection, Prometheus metrics and structured JSON logging. Runs on
 `@nestjs/platform-fastify` (`FastifyAdapter({ trustProxy: true })` for real
-client IPs behind Nginx) under the global `/api` prefix (except `GET /health`
+client IPs behind Traefik) under the global `/api` prefix (except `GET /health`
 and `GET /metrics`).
 
 - Swagger UI: `GET /api/docs`
@@ -51,7 +51,7 @@ flowchart LR
 ```
 
 `/auth/*` additionally passes `ThrottlerGuard` (10 req/min per IP by default;
-real client IPs via the adapter's `trustProxy` behind Nginx).
+real client IPs via the adapter's `trustProxy` behind Traefik).
 
 **Session cookie.** Login/register set `token` (`HttpOnly; SameSite=Lax;
 Path=/; Max-Age=86400` — matching the 24h JWT TTL); `POST /auth/logout`

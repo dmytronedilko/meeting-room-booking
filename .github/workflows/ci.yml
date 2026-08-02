@@ -316,7 +316,7 @@ jobs:
       - name: Start the app stack
         # Images are pre-built above; no --build. The backend entrypoint applies
         # migrations + seed; --wait blocks until db and backend are healthy.
-        run: docker compose up -d --wait --wait-timeout 180 db backend frontend proxy
+        run: docker compose up -d --wait --wait-timeout 180 db backend frontend traefik
       - name: Run e2e tests
         env:
           E2E_BASE_URL: http://localhost

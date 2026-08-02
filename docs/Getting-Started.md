@@ -164,7 +164,7 @@ committed; Docker Compose supplies sane defaults for local use.
 
 | Variable | Required | Default | Description |
 | --- | :---: | --- | --- |
-| `NEXT_PUBLIC_API_URL` | ✅ | `http://localhost:3001/api` | API base. **Baked in at build time.** In Docker it is `/api` (same origin behind Nginx) |
+| `NEXT_PUBLIC_API_URL` | ✅ | `http://localhost:3001/api` | API base. **Baked in at build time.** In Docker it is `/api` (same origin behind Traefik) |
 
 ### Tests
 
@@ -196,7 +196,7 @@ npm run test:e2e                     # Playwright browser e2e (needs the full st
 - **Integration tests** run against the separate `booking_test` database and
   apply migrations before the suite.
 - **E2E** drives the real app in a browser; bring the stack up first:
-  `docker compose up -d --wait db backend frontend proxy`.
+  `docker compose up -d --wait db backend frontend traefik`.
 
 ## 🪝 Git hooks (automatic, fast)
 

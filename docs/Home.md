@@ -53,7 +53,7 @@ are stored in **UTC** in the database.
 | **Frontend** | Next.js 16 (App Router), React 19, Tailwind CSS 4, shadcn/ui, lucide-react, sonner, next-themes, TanStack Query |
 | **Backend** | NestJS 11 (Fastify adapter), class-validator DTOs, Swagger, JWT auth, `@nestjs/throttler` |
 | **Database** | PostgreSQL 16 + Prisma 7 (SQL migrations, `btree_gist` EXCLUDE constraint) |
-| **Proxy** | Nginx — the single entry point (`:80`) |
+| **Proxy** | Traefik — the single entry point (`:80`) |
 | **Monitoring** | Prometheus + Grafana (pre-provisioned dashboard) |
 | **Logging** | Structured JSON via `nestjs-pino` → ELK (Filebeat → Elasticsearch → Kibana) |
 | **Tests** | Vitest (unit), supertest (integration), Playwright (e2e) |
@@ -67,7 +67,7 @@ flowchart LR
     Browser(["🧑‍💻 Browser"])
 
     subgraph stack["Docker Compose"]
-        Proxy["Nginx :80<br/>single entry point"]
+        Proxy["Traefik :80<br/>single entry point"]
         FE["Frontend<br/>Next.js :3000"]
         BE["Backend<br/>NestJS :3001"]
         DB[("PostgreSQL 16")]
@@ -99,7 +99,7 @@ For hot-reload dev mode and the `.env` reference, see **[Getting Started](Gettin
 
 | Surface | URL | Notes |
 | --- | --- | --- |
-| **App** | http://localhost | via Nginx |
+| **App** | http://localhost | via Traefik |
 | **API (Swagger)** | http://localhost/api/docs | interactive REST docs |
 | **Grafana** | http://localhost:3002 | `admin` / `admin`, dashboard pre-provisioned |
 | **Prometheus** | http://localhost:9090 | scrapes `backend:3001/metrics` |

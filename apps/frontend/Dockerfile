@@ -9,7 +9,7 @@ RUN npm ci --no-audit --no-fund
 # ---------- Stage 2: build with Nx (Next.js standalone output) ----------
 FROM deps AS build
 ENV NX_DAEMON=false
-# Baked into the client bundle at build time. `/api` = same origin via Nginx.
+# Baked into the client bundle at build time. `/api` = same origin via Traefik.
 ARG NEXT_PUBLIC_API_URL=/api
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 COPY . .

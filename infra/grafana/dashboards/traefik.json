@@ -1,0 +1,123 @@
+{
+  "uid": "traefik-edge",
+  "title": "Meeting Room Booking — Traefik edge",
+  "tags": ["traefik", "proxy", "edge"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Requests per second — by service",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2, "fillOpacity": 12, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (rate(traefik_service_requests_total[1m]))",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Request latency p95 / p50 — by service",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (service, le) (rate(traefik_service_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{service}} p95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum by (service, le) (rate(traefik_service_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{service}} p50"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "5xx error ratio — by service",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "lineWidth": 2, "fillOpacity": 12, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (rate(traefik_service_requests_total{code=~\"5..\"}[5m])) / clamp_min(sum by (service) (rate(traefik_service_requests_total[5m])), 1e-9)",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Requests per second — by status code (web entrypoint)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "lineWidth": 2, "fillOpacity": 12, "showPoints": "never", "stacking": { "mode": "normal" } }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (code) (rate(traefik_entrypoint_requests_total{entrypoint=\"web\"}[1m]))",
+          "legendFormat": "{{code}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Open connections — by entrypoint",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2, "fillOpacity": 8, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (entrypoint) (traefik_open_connections)",
+          "legendFormat": "{{entrypoint}}"
+        }
+      ]
+    }
+  ]
+}

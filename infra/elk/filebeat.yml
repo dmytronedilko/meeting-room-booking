@@ -1,6 +1,6 @@
 # Ships docker container logs of this compose project to Elasticsearch.
 # The backend writes structured JSON (pino), which is lifted to event root
-# fields; other services (nginx, postgres, ...) arrive as plain messages.
+# fields; other services (traefik, postgres, ...) arrive as plain messages.
 
 filebeat.inputs:
   - type: container

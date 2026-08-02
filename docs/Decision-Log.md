@@ -26,7 +26,7 @@ older ones — superseding is noted inline rather than by deleting history.
 | [0007](#adr-0007--jwt-in-an-httponly-cookie) | JWT in an HttpOnly cookie | ✅ | 2026-07 |
 | [0008](#adr-0008--route-protection-in-middleware-data-via-tanstack-query) | Middleware route-guard; client data fetching | ✅ | 2026-07 |
 | [0009](#adr-0009--bcryptjs-instead-of-native-bcrypt) | `bcryptjs` instead of native `bcrypt` | ✅ | 2026-07 |
-| [0010](#adr-0010--nginx-as-the-single-entry-point) | Nginx single entry point | ✅ | 2026-07 |
+| [0010](#adr-0010--nginx-as-the-single-entry-point) | Nginx single entry point | 🔄 | 2026-07 |
 | [0011](#adr-0011--prometheus--grafana-elk-without-logstash) | Prometheus/Grafana; ELK without Logstash | ✅ | 2026-07 |
 | [0012](#adr-0012--biome-replaces-eslint--prettier) | Biome replaces ESLint + Prettier | ✅ | 2026-07 |
 | [0013](#adr-0013--track-latest-major-deps-pin-typescript-to-603) | Latest major deps; pin TypeScript 6.0.3 | ✅ | 2026-07 |
@@ -36,6 +36,7 @@ older ones — superseding is noted inline rather than by deleting history.
 | [0017](#adr-0017--protect-main-gate-merges-on-all-ci-checks) | Protect `main`; gate merges on CI | ✅ | 2026-08-02 |
 | [0018](#adr-0018--trunk-based-flow-with-a-develop-mirror) | Trunk-based flow, `develop` mirror | ✅ | 2026-08-02 |
 | [0019](#adr-0019--docs-in-docs-mirrored-to-the-github-wiki) | `/docs` mirrored to the GitHub Wiki | ✅ | 2026-08-02 |
+| [0020](#adr-0020--traefik-replaces-nginx-as-the-single-entry-point) | Traefik replaces Nginx as the edge | ✅ | 2026-08-02 |
 
 ---
 
@@ -175,7 +176,7 @@ at this scale).
 ## Observability & runtime
 
 ### ADR-0010 · Nginx as the single entry point
-**Status:** ✅ Accepted · **Date:** 2026-07
+**Status:** 🔄 Superseded by [ADR-0020](#adr-0020--traefik-replaces-nginx-as-the-single-entry-point) · **Date:** 2026-07
 
 **Context.** One origin for the app avoids CORS in production and hides internal
 ports.
@@ -324,6 +325,35 @@ flat wiki. `.github/workflows/publish-wiki.yml` runs the sync on every push to
 code); docs site generator (Docusaurus/MkDocs — more infra than needed).
 **Consequences.** One source, PR-reviewed, auto-published. One-time setup: the
 wiki's first page must be created via the UI before the backing repo exists.
+
+## Networking & edge
+
+### ADR-0020 · Traefik replaces Nginx as the single entry point
+**Status:** ✅ Accepted · **Date:** 2026-08-02 · **Supersedes** [ADR-0010](#adr-0010--nginx-as-the-single-entry-point)
+
+**Context.** ADR-0010 put **Nginx** on `:80` as the one published app port, with
+routes hand-maintained in `nginx.conf`. That works, but the upstream list is
+static, there's no first-class metrics feed for the Prometheus/Grafana stack we
+already run ([ADR-0011](#adr-0011--prometheus--grafana-elk-without-logstash)), and
+TLS would be one more bespoke block to hand-roll.
+**Decision.** **Traefik v3** is the edge on `:80` (and `:443`, templated). Routing
+moves off a config file onto **Docker-provider labels** on the `backend` and
+`frontend` services — `/api` (prefix kept, matching the Nest global prefix) beats
+a `/` catch-all by router priority. Traefik reads the Docker API through a
+**read-only `tecnativa/docker-socket-proxy`** on an `internal` network, so it
+never mounts `/var/run/docker.sock` itself. Native **Prometheus metrics** feed a
+provisioned Grafana dashboard; the dashboard UI binds to `127.0.0.1:8080`.
+Let's Encrypt is configured but commented, ready for a real domain. The external
+contract is unchanged: same `:80`, same two routes, same-origin cookies, and
+`GET /health` + `/metrics` still bypass the proxy.
+**Alternatives.** Keep Nginx (static upstreams, no built-in metrics/ACME — the
+ADR-0010 choice, now outgrown); Caddy (great auto-TLS, weaker dynamic
+service-discovery for Docker); mount the raw Docker socket into Traefik (simpler,
+but hands the edge container root-equivalent host access).
+**Consequences.** Adding a routed service is now a label, not a proxy edit; metrics
+and a TLS path come for free. Cost: two extra containers (Traefik + socket-proxy)
+and a Traefik-specific mental model. The socket-proxy is the only container that
+touches the Docker socket, and it does so read-only on an isolated network.
 
 ---
 

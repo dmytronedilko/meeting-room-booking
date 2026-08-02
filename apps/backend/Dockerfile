@@ -47,6 +47,11 @@ RUN node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('./packag
   && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
     /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
+# Drop to the unprivileged user baked into the node image (matches the frontend
+# image). The runtime only reads /app, reaches Postgres, and listens on 3001 —
+# none of which needs root; migrations/seed run over the network, not on disk.
+USER node
+
 EXPOSE 3001
 # Applies migrations and the demo seed, then starts the API.
 CMD ["./docker-entrypoint.sh"]

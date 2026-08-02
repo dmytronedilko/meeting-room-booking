@@ -345,8 +345,10 @@ log/metric channel makes swapping in email/push a one-method change.
 
 ## 🧭 Key decisions
 
-A few choices worth knowing (the full list of 13, with rationale, lives in the
-root [`README.md`](../README.md#decisions-made-not-dictated-by-the-spec)):
+A few choices worth knowing. Full rationale — context, alternatives, and
+trade-offs — lives in the **[Decision Log](Decision-Log)** (ADRs); the original
+app-level list is in the root
+[`README.md`](../README.md#decisions-made-not-dictated-by-the-spec):
 
 1. **JWT in an HttpOnly cookie** — XSS-safe, `SameSite=Lax` CSRF protection.
 2. **Overlap enforced by the DB constraint only** — no pre-check, race-free.

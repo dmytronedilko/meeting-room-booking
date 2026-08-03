@@ -29,6 +29,13 @@ COPY --from=build /workspace/dist/apps/frontend/.next/standalone ./
 COPY --from=build /workspace/dist/apps/frontend/.next/static ./dist/apps/frontend/.next/static
 COPY --from=build /workspace/apps/frontend/public ./apps/frontend/public
 
+# Harden the runtime image: remove npm/corepack — build-time-only tooling the
+# Next.js standalone server never uses (CMD is `node server.js`). npm's vendored
+# deps otherwise ship as image CVEs, e.g. its bundled `tar` (CVE-2026-59873).
+# Mirrors the backend runtime image.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+
 USER node
 EXPOSE 3000
 CMD ["node", "apps/frontend/server.js"]

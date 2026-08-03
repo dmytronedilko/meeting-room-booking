@@ -5,12 +5,16 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+  # Run on a merge queue so a queue (if enabled) never merges an unchecked
+  # commit; and allow manual reruns.
+  merge_group:
+  workflow_dispatch: {}
 
-# Cancel superseded runs on a branch/PR, but never cancel a run on the default
-# branch (those produce the published images + attestations).
+# Cancel superseded runs on a branch/PR, but NEVER cancel the default branch or
+# a tag run — those produce the published images + attestations.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
 
 # Least privilege by default; jobs widen their own scope only where needed.
 permissions:
@@ -18,8 +22,6 @@ permissions:
 
 env:
   NX_DAEMON: 'false'
-  BACKEND_IMAGE: ghcr.io/${{ github.repository }}-backend
-  FRONTEND_IMAGE: ghcr.io/${{ github.repository }}-frontend
 
 jobs:
   # ══════════════════════════════════════════════════════════════════════════
@@ -35,6 +37,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-node-ci
       - run: npx nx run-many -t lint
 
@@ -46,6 +50,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0 # full history so the whole push/PR range is scanned
+          persist-credentials: false
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,6 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Validate commit subjects (Conventional Commits)
         if: github.event_name == 'pull_request'
         env:
@@ -83,10 +89,15 @@ jobs:
     name: SCA (Snyk deps)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to the Security tab
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-node-ci
       - name: Snyk Open Source (SCA)
         if: ${{ env.SNYK_TOKEN != '' }}
@@ -94,9 +105,10 @@ jobs:
           npm install -g snyk
           # Fail only on FIXABLE high/critical (`--fail-on=upgradable`); everything
           # else is reported. A non-vuln error (exit 2/3 — network/API/no manifest)
-          # degrades to a warning instead of failing the pipeline.
+          # degrades to a warning. SARIF is written regardless of the exit code, for
+          # the Security-tab upload below.
           set +e
-          snyk test --severity-threshold=high --fail-on=upgradable
+          snyk test --severity-threshold=high --fail-on=upgradable --sarif-file-output=snyk-sca.sarif
           code=$?
           set -e
           case "$code" in
@@ -104,9 +116,25 @@ jobs:
             1) echo "::error::Snyk SCA found fixable high/critical vulnerabilities."; exit 1 ;;
             *) echo "::warning::Snyk SCA did not complete (exit $code — network/API/no-manifest); not failing the build." ;;
           esac
-      - name: Skipped (no token)
-        if: ${{ env.SNYK_TOKEN == '' }}
-        run: echo "::notice::SNYK_TOKEN not set — skipping Snyk SCA (fork PR or secret missing)."
+      - name: Upload SCA SARIF
+        # Runs even when the scan step failed on a finding (!cancelled()), as long
+        # as a SARIF file was produced (skips the degraded-to-warning case).
+        if: ${{ !cancelled() && env.SNYK_TOKEN != '' && hashFiles('snyk-sca.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@d1ba80a13dd99fba24a470575428917156a28b43 # v4
+        with:
+          sarif_file: snyk-sca.sarif
+          category: snyk-sca
+      # A missing token is legitimate ONLY on a fork PR (GitHub withholds secrets
+      # from forks). Anywhere else an empty token means a broken/revoked secret —
+      # fail loudly instead of passing a security gate as a silent no-op.
+      - name: Skip — no token on a fork PR
+        if: ${{ env.SNYK_TOKEN == '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
+        run: echo "::notice::SNYK_TOKEN unavailable on a fork PR — skipping Snyk SCA."
+      - name: Fail — missing token on a trusted run
+        if: ${{ env.SNYK_TOKEN == '' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) }}
+        run: |
+          echo "::error::SNYK_TOKEN is not set on a trusted run (push or same-repo PR). Refusing to pass Snyk SCA as a no-op."
+          exit 1
 
   hadolint:
     name: Hadolint
@@ -114,6 +142,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Lint backend Dockerfile
         uses: hadolint/hadolint-action@2a66e89f53d0771bb131a7fa31f3136336094aa6 # v3.4.0
         with:
@@ -131,12 +161,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Trivy config scan (Dockerfiles + compose)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
           scan-ref: .
-          severity: CRITICAL
+          # HIGH matters for IaC (permissive networking, root containers, socket
+          # mounts). Consciously-accepted findings live in .trivyignore with a
+          # justification + expiry — not silenced wholesale.
+          severity: CRITICAL,HIGH
           exit-code: '1'
           trivyignores: .trivyignore
 
@@ -146,14 +181,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-node-ci
       - name: Production dependency licenses
         run: |
           # Report the license spread, then fail on strong-copyleft / SSPL in any
-          # production dependency (project is MIT). Unknown licenses are surfaced
-          # in the summary; flip to a strict `--onlyAllow` allowlist once reviewed.
-          npx --yes license-checker-rseidelsohn@latest --production --summary
-          npx --yes license-checker-rseidelsohn@latest --production \
+          # production dependency (project is MIT). Version is pinned (not @latest)
+          # so CI never executes an unreviewed newer release of this tool.
+          npx --yes license-checker-rseidelsohn@5.0.1 --production --summary
+          npx --yes license-checker-rseidelsohn@5.0.1 --production \
             --failOn "GPL-1.0;GPL-2.0;GPL-2.0-only;GPL-2.0-or-later;GPL-3.0;GPL-3.0-only;GPL-3.0-or-later;AGPL-1.0;AGPL-3.0;AGPL-3.0-only;AGPL-3.0-or-later;LGPL-2.0;LGPL-2.1;LGPL-3.0;SSPL-1.0"
 
   dependency_review:
@@ -163,6 +200,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
@@ -174,6 +213,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-node-ci
       - name: Unit tests with coverage
         # CI=true (set by Actions) turns on vitest v8 coverage → coverage/*/lcov.info.
@@ -195,6 +236,8 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Initialize CodeQL
         uses: github/codeql-action/init@d1ba80a13dd99fba24a470575428917156a28b43 # v4
         with:
@@ -228,6 +271,8 @@ jobs:
       TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/booking_test?schema=public
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-node-ci
       - run: npm run test:integration
 
@@ -239,8 +284,31 @@ jobs:
     name: Build images
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Lowercase image names, computed once here (the root every consumer already
+    # `needs`) and passed down as outputs — GHCR rejects an uppercase repo slug.
+    outputs:
+      backend_image: ${{ steps.imgnames.outputs.backend_image }}
+      frontend_image: ${{ steps.imgnames.outputs.frontend_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Compute image names (GHCR requires a lowercase repo slug)
+        id: imgnames
+        run: |
+          repo="${GITHUB_REPOSITORY,,}"
+          backend="ghcr.io/${repo}-backend"
+          frontend="ghcr.io/${repo}-frontend"
+          # For this job's later steps…
+          {
+            echo "BACKEND_IMAGE=${backend}"
+            echo "FRONTEND_IMAGE=${frontend}"
+          } >> "$GITHUB_ENV"
+          # …and for container_scan / e2e / publish (they read these outputs).
+          {
+            echo "backend_image=${backend}"
+            echo "frontend_image=${frontend}"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - name: Build backend image (load, no push)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -261,7 +329,10 @@ jobs:
           load: true
           tags: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
           cache-from: type=gha,scope=frontend
-          cache-to: type=gha,scope=frontend,mode=max
+          # mode=min (not max): two mode=max image caches overflow GitHub's 10 GB
+          # per-repo cache limit, and eviction then makes the cache unreliable for
+          # everything. min exports the final-image layers only. See ADR notes / C3.
+          cache-to: type=gha,scope=frontend,mode=min
       - name: SBOM — backend (syft)
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
@@ -277,13 +348,17 @@ jobs:
           output-file: sbom-frontend.spdx.json
           upload-artifact: false
       - name: Export images as an artifact
-        run: docker save "${BACKEND_IMAGE}:${GITHUB_SHA}" "${FRONTEND_IMAGE}:${GITHUB_SHA}" | gzip > images.tar.gz
+        # No gzip: `docker save` already tars compressed layers, and upload-artifact
+        # zips the result again — double compression for ~no size gain. Save raw and
+        # upload with compression-level 0 (a single, cheap pass).
+        run: docker save "${BACKEND_IMAGE}:${GITHUB_SHA}" "${FRONTEND_IMAGE}:${GITHUB_SHA}" -o images.tar
       - name: Upload images
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: images
-          path: images.tar.gz
+          path: images.tar
           retention-days: 1
+          compression-level: 0
       - name: Upload SBOMs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -291,40 +366,75 @@ jobs:
           path: sbom-*.spdx.json
           retention-days: 90
 
-  # ── Scan the built image before it can ever be published ───────────────────
+  # ── Scan the built images before they can ever be published ────────────────
   container_scan:
     name: Container scan (Snyk)
     needs: [build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to the Security tab
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      BACKEND_IMAGE: ${{ needs.build.outputs.backend_image }}
+      FRONTEND_IMAGE: ${{ needs.build.outputs.frontend_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Download images
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: images
       - name: Load images
-        run: docker load < images.tar.gz
-      - name: Snyk Container test (backend image)
+        run: docker load < images.tar
+      - name: Snyk Container test (backend + frontend)
         if: ${{ env.SNYK_TOKEN != '' }}
         run: |
           npm install -g snyk
-          # Gate on CRITICAL only (ADR-0016); network/API errors degrade to a warning.
-          set +e
-          snyk container test "${BACKEND_IMAGE}:${GITHUB_SHA}" \
-            --file=apps/backend/Dockerfile --severity-threshold=critical
-          code=$?
-          set -e
-          case "$code" in
-            0) echo "Snyk Container: no critical issues." ;;
-            1) echo "::error::Snyk Container found critical vulnerabilities."; exit 1 ;;
-            *) echo "::warning::Snyk Container did not complete (exit $code); not failing the build." ;;
-          esac
-      - name: Skipped (no token)
-        if: ${{ env.SNYK_TOKEN == '' }}
-        run: echo "::notice::SNYK_TOKEN not set — skipping Snyk Container scan (fork PR or secret missing)."
+          # Gate on CRITICAL only (ADR-0016). Scan BOTH images, each against its own
+          # Dockerfile; a finding in EITHER fails the job. A network/API error on an
+          # image degrades to a warning. SARIF is emitted per image for the upload.
+          fail=0
+          warn=0
+          scan() {
+            local image="$1" dockerfile="$2" sarif="$3"
+            set +e
+            snyk container test "$image" --file="$dockerfile" \
+              --severity-threshold=critical --sarif-file-output="$sarif"
+            local code=$?
+            set -e
+            case "$code" in
+              0) echo "Snyk Container ($image): no critical issues." ;;
+              1) echo "::error::Snyk Container found critical vulnerabilities in $image."; fail=1 ;;
+              *) echo "::warning::Snyk Container did not complete for $image (exit $code)."; warn=1 ;;
+            esac
+          }
+          scan "${BACKEND_IMAGE}:${GITHUB_SHA}"  apps/backend/Dockerfile  snyk-container-backend.sarif
+          scan "${FRONTEND_IMAGE}:${GITHUB_SHA}" apps/frontend/Dockerfile snyk-container-frontend.sarif
+          if [ "$fail" -eq 1 ]; then exit 1; fi
+          if [ "$warn" -eq 1 ]; then echo "::warning::One or more container scans did not complete (not failing)."; fi
+      - name: Upload backend container SARIF
+        if: ${{ !cancelled() && env.SNYK_TOKEN != '' && hashFiles('snyk-container-backend.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@d1ba80a13dd99fba24a470575428917156a28b43 # v4
+        with:
+          sarif_file: snyk-container-backend.sarif
+          category: snyk-container-backend
+      - name: Upload frontend container SARIF
+        if: ${{ !cancelled() && env.SNYK_TOKEN != '' && hashFiles('snyk-container-frontend.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@d1ba80a13dd99fba24a470575428917156a28b43 # v4
+        with:
+          sarif_file: snyk-container-frontend.sarif
+          category: snyk-container-frontend
+      - name: Skip — no token on a fork PR
+        if: ${{ env.SNYK_TOKEN == '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
+        run: echo "::notice::SNYK_TOKEN unavailable on a fork PR — skipping container scan."
+      - name: Fail — missing token on a trusted run
+        if: ${{ env.SNYK_TOKEN == '' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) }}
+        run: |
+          echo "::error::SNYK_TOKEN is not set on a trusted run (push or same-repo PR). Refusing to pass the container scan as a no-op."
+          exit 1
 
   # ── Quality gate (parallel; PR-only enforcement) ───────────────────────────
   sonarqube:
@@ -339,6 +449,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0 # Sonar needs full history for new-code / blame
+          persist-credentials: false
       - name: Download coverage report
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
@@ -354,9 +465,16 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
         uses: SonarSource/sonarqube-quality-gate-action@d304d050d930b02a896b0f85935344f023928496 # v1
         timeout-minutes: 5
-      - name: Skipped (no token / host)
-        if: ${{ env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == '' }}
-        run: echo "::notice::SONAR_TOKEN/SONAR_HOST_URL not fully set — skipping SonarQube."
+      # As with the Snyk gates: empty token/host is legitimate only on a fork PR;
+      # anywhere else it means a broken secret — fail rather than silently no-op.
+      - name: Skip — no token/host on a fork PR
+        if: ${{ (env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == '') && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork }}
+        run: echo "::notice::SONAR_TOKEN/SONAR_HOST_URL unavailable on a fork PR — skipping SonarQube."
+      - name: Fail — missing token/host on a trusted run
+        if: ${{ (env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == '') && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) }}
+        run: |
+          echo "::error::SONAR_TOKEN/SONAR_HOST_URL not fully set on a trusted run. Refusing to pass the quality gate as a no-op."
+          exit 1
 
   # ── E2E (needs the image + integration; NOT the container scan) ────────────
   e2e:
@@ -364,14 +482,26 @@ jobs:
     needs: [build, integration]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      BACKEND_IMAGE: ${{ needs.build.outputs.backend_image }}
+      FRONTEND_IMAGE: ${{ needs.build.outputs.frontend_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-node-ci
+      - name: Resolve Playwright version
+        # Key the browser cache on the installed Playwright version, not the lockfile
+        # hash: an unrelated lock change must not evict the browsers, and a Playwright
+        # bump with an unchanged lock must MISS (not restore an incompatible cache).
+        run: echo "PLAYWRIGHT_VERSION=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_ENV"
       - name: Cache Playwright browsers
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
       - name: Download images
@@ -380,7 +510,7 @@ jobs:
           name: images
       - name: Load + tag images for compose
         run: |
-          docker load < images.tar.gz
+          docker load < images.tar
           docker tag "${BACKEND_IMAGE}:${GITHUB_SHA}" meeting-room-booking-backend:latest
           docker tag "${FRONTEND_IMAGE}:${GITHUB_SHA}" meeting-room-booking-frontend:latest
       - name: Start the app stack
@@ -406,10 +536,18 @@ jobs:
         run: docker compose down -v
 
   # ── Publish (default branch + tags only; never on feature branches/PRs) ────
-  # Pushes the SAME scanned image, then attaches provenance + SBOM attestations.
+  # Pushes the SAME scanned images, then attaches provenance + SBOM attestations.
   publish:
     name: Publish images
-    needs: [build, container_scan, unit, integration, e2e]
+    # Gate the release on the fast, self-contained security jobs too (secrets,
+    # snyk_sca, license_check, iac_scan): branch protection does NOT cover push or
+    # tag events, so without this a red gitleaks/SCA/license/IaC run could still
+    # ship (B1). codeql and sonarqube are deliberately NOT gating publish — both
+    # are slow and/or depend on an external service, and coupling a release to
+    # their latency/availability isn't worth it; they still run on every push and
+    # are enforced on PRs. (dependency_review is PR-only, so it is intentionally
+    # absent — a skipped need would skip publish.)
+    needs: [build, container_scan, unit, integration, e2e, secrets, snyk_sca, license_check, iac_scan]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -418,8 +556,13 @@ jobs:
       packages: write # push to GHCR
       id-token: write # keyless signing / attestations via GitHub OIDC
       attestations: write # record the attestations
+    env:
+      BACKEND_IMAGE: ${{ needs.build.outputs.backend_image }}
+      FRONTEND_IMAGE: ${{ needs.build.outputs.frontend_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Download images
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
@@ -434,15 +577,53 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Load + push images
+      # Tag set: always the commit SHA; on a v* tag also the semver version + latest;
+      # never latest on main (flavor latest=false + the enable= guard).
+      - name: Docker metadata — backend
+        id: meta-backend
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.BACKEND_IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ github.sha }}
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - name: Docker metadata — frontend
+        id: meta-frontend
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.FRONTEND_IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ github.sha }}
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - name: Load, tag, and push
         id: push
+        env:
+          BACKEND_TAGS: ${{ steps.meta-backend.outputs.tags }}
+          FRONTEND_TAGS: ${{ steps.meta-frontend.outputs.tags }}
         run: |
-          docker load < images.tar.gz
-          docker push "${BACKEND_IMAGE}:${GITHUB_SHA}"
-          docker push "${FRONTEND_IMAGE}:${GITHUB_SHA}"
+          docker load < images.tar
+          push_all() {
+            local src="$1" tags="$2"
+            printf '%s\n' "$tags" | while IFS= read -r t; do
+              [ -z "$t" ] && continue
+              docker tag "$src" "$t"
+              docker push "$t"
+            done
+          }
+          push_all "${BACKEND_IMAGE}:${GITHUB_SHA}"  "$BACKEND_TAGS"
+          push_all "${FRONTEND_IMAGE}:${GITHUB_SHA}" "$FRONTEND_TAGS"
+          # Digest is content-addressed (identical across every tag). Read it from
+          # the registry — not RepoDigests[0], which is order-dependent once an
+          # image carries a second repo tag (D3).
+          backend_digest="$(docker buildx imagetools inspect "${BACKEND_IMAGE}:${GITHUB_SHA}" --format '{{.Manifest.Digest}}')"
+          frontend_digest="$(docker buildx imagetools inspect "${FRONTEND_IMAGE}:${GITHUB_SHA}" --format '{{.Manifest.Digest}}')"
           {
-            echo "backend_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${BACKEND_IMAGE}:${GITHUB_SHA}" | cut -d@ -f2)"
-            echo "frontend_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${FRONTEND_IMAGE}:${GITHUB_SHA}" | cut -d@ -f2)"
+            echo "backend_digest=${backend_digest}"
+            echo "frontend_digest=${frontend_digest}"
           } >> "$GITHUB_OUTPUT"
       - name: Attest backend provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1

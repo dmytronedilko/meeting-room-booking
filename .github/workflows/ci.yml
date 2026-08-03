@@ -193,20 +193,6 @@ jobs:
           npx --yes license-checker-rseidelsohn@5.0.1 --production \
             --failOn "GPL-1.0;GPL-2.0;GPL-2.0-only;GPL-2.0-or-later;GPL-3.0;GPL-3.0-only;GPL-3.0-or-later;AGPL-1.0;AGPL-3.0;AGPL-3.0-only;AGPL-3.0-or-later;LGPL-2.0;LGPL-2.1;LGPL-3.0;SSPL-1.0"
 
-  dependency_review:
-    name: Dependency review
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
-        with:
-          fail-on-severity: high
-          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.1, LGPL-3.0, SSPL-1.0
-
   unit:
     name: Unit tests + coverage
     runs-on: ubuntu-latest
@@ -348,9 +334,8 @@ jobs:
           output-file: sbom-frontend.spdx.json
           upload-artifact: false
       - name: Export images as an artifact
-        # No gzip: `docker save` already tars compressed layers, and upload-artifact
-        # zips the result again — double compression for ~no size gain. Save raw and
-        # upload with compression-level 0 (a single, cheap pass).
+        # No gzip: `docker save` already tars compressed layers; gzip-then-artifact-zip
+        # would be double compression. Save raw and let upload-artifact do ONE zip pass.
         run: docker save "${BACKEND_IMAGE}:${GITHUB_SHA}" "${FRONTEND_IMAGE}:${GITHUB_SHA}" -o images.tar
       - name: Upload images
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -358,7 +343,9 @@ jobs:
           name: images
           path: images.tar
           retention-days: 1
-          compression-level: 0
+          # Single zip pass at level 6: the artifact is downloaded 3× (container_scan
+          # / e2e / publish), so keeping it small beats the raw-tar (level 0) download.
+          compression-level: 6
       - name: Upload SBOMs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -539,15 +526,14 @@ jobs:
   # Pushes the SAME scanned images, then attaches provenance + SBOM attestations.
   publish:
     name: Publish images
-    # Gate the release on the fast, self-contained security jobs too (secrets,
-    # snyk_sca, license_check, iac_scan): branch protection does NOT cover push or
-    # tag events, so without this a red gitleaks/SCA/license/IaC run could still
-    # ship (B1). codeql and sonarqube are deliberately NOT gating publish — both
-    # are slow and/or depend on an external service, and coupling a release to
-    # their latency/availability isn't worth it; they still run on every push and
-    # are enforced on PRs. (dependency_review is PR-only, so it is intentionally
-    # absent — a skipped need would skip publish.)
-    needs: [build, container_scan, unit, integration, e2e, secrets, snyk_sca, license_check, iac_scan]
+    # Gate the release on the security jobs too: branch protection does NOT cover
+    # push or tag events, so without this a red gitleaks / SCA / license / IaC /
+    # SAST run could still ship. codeql is included — it runs on push, can fail,
+    # and is shorter than e2e (which we already wait on), so no critical-path cost.
+    # sonarqube is deliberately OUT: its quality gate is PR-only (the gate poll
+    # 403s on push branch-analysis with the analysis token), so depending on it
+    # here would be decorative.
+    needs: [build, container_scan, unit, integration, e2e, codeql, secrets, snyk_sca, license_check, iac_scan]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15

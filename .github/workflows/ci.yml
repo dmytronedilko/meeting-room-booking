@@ -172,7 +172,11 @@ jobs:
         if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
         uses: SonarSource/sonarqube-scan-action@v8 # reads sonar-project.properties
       - name: SonarQube Quality Gate
-        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        # Enforce the gate on PRs only. The scan above still runs on push to `main`
+        # (keeps SonarCloud's new-code baseline current), but the gate poll 403s on
+        # branch analysis with the analysis token — and blocking is moot post-merge,
+        # since `main` is PR-only and the gate already ran on the PR.
+        if: ${{ github.event_name == 'pull_request' && env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
         uses: SonarSource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
       - name: Skipped (no token / host)

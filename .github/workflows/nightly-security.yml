@@ -1,0 +1,52 @@
+name: Nightly security
+
+# Full scans that are too noisy or slow to gate every PR: Snyk unfiltered by
+# fixability (catches high/critical advisories with no fix yet — which the gated
+# CI deliberately lets pass, per ADR-0016), plus a full-history gitleaks sweep.
+# A red run here means "review", not "blocked merge". Runs nightly + on demand.
+on:
+  schedule:
+    - cron: '0 2 * * *' # 02:00 UTC (ahead of the 03:00 DAST run)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-security-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  snyk_full:
+    name: Snyk (unfiltered by fixability)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-ci
+      - name: Snyk test (high/critical, fixable or not)
+        if: ${{ env.SNYK_TOKEN != '' }}
+        run: |
+          npm install -g snyk
+          # Full low+ report for visibility, then fail on high/critical regardless
+          # of whether a fix exists (unlike the gated CI's `--fail-on=upgradable`).
+          snyk test --severity-threshold=low || true
+          snyk test --severity-threshold=high
+      - name: Skipped (no token)
+        if: ${{ env.SNYK_TOKEN == '' }}
+        run: echo "::notice::SNYK_TOKEN not set — skipping."
+
+  gitleaks_full:
+    name: gitleaks (full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_SUMMARY: 'true'

@@ -3,69 +3,63 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
-# Cancel superseded runs on the same ref (e.g. new push to a PR branch).
+# Cancel superseded runs on a branch/PR, but never cancel a run on the default
+# branch (those produce the published images + attestations).
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# Least privilege by default; individual jobs widen their own scope below.
+# Least privilege by default; jobs widen their own scope only where needed.
 permissions:
   contents: read
 
 env:
-  # Pinned to the exact Node the Dockerfiles use (`node:26.5.1-alpine`) so CI,
-  # the images, and `.nvmrc` all build/test/ship on the identical version.
-  NODE_VERSION: '26.5.1'
   NX_DAEMON: 'false'
-  # Images are built once in Stage 3 — only after the source gates pass — and
-  # pushed to GHCR under the commit SHA, then pulled by the container scan
-  # (Stage 4) and E2E (Stage 5). No image is built twice, and a failing source
-  # check never wastes a build or leaves a stray SHA-tagged image in GHCR.
   BACKEND_IMAGE: ghcr.io/${{ github.repository }}-backend
   FRONTEND_IMAGE: ghcr.io/${{ github.repository }}-frontend
 
 jobs:
-  # ═══ Stage 1 — Sanity & Dependencies (parallel, fail-fast) ═══════════════
-  # Everything here duplicates the local git hooks, so a `--no-verify` bypass is
-  # still caught. All jobs always run (guarded jobs no-op internally) so the
-  # `needs:` DAG below never trips GitHub's skipped-dependency propagation.
+  # ══════════════════════════════════════════════════════════════════════════
+  # Everything below runs in parallel from t=0 and blocks merges via branch
+  # protection (see docs/Decision-Log.md ADR-0022). The image BUILD no longer
+  # waits on the analysis jobs, so the critical path is Build → E2E.
+  # `--no-verify` bypasses of the local git hooks are re-checked here.
+  # ══════════════════════════════════════════════════════════════════════════
 
   lint:
     name: Lint (Biome)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-ci
       - run: npx nx run-many -t lint
 
   secrets:
     name: Secrets (gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0 # full history so the whole push/PR range is scanned
-      - uses: gitleaks/gitleaks-action@v3
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Free for public repos; config (allowlists) read from .gitleaks.toml.
+          # Free for public repos; allowlists read from .gitleaks.toml.
 
   commitlint:
     name: Commit messages
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Validate commit subjects (Conventional Commits)
-        # Only PRs have a well-defined range; step-level guard keeps the job always
-        # succeeding on push (so Stage 2 can safely `needs:` it).
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -88,47 +82,105 @@ jobs:
   snyk_sca:
     name: SCA (Snyk deps)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - name: Snyk Open Source (SCA) test
-        # SCA only — scans package.json/lock dependencies. NOT Snyk Code (SAST).
-        # Gate on CRITICAL severity only (team policy); high/medium/low are non-blocking.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-ci
+      - name: Snyk Open Source (SCA)
         if: ${{ env.SNYK_TOKEN != '' }}
         run: |
           npm install -g snyk
-          snyk test --severity-threshold=critical
+          # Fail only on FIXABLE high/critical (`--fail-on=upgradable`); everything
+          # else is reported. A non-vuln error (exit 2/3 — network/API/no manifest)
+          # degrades to a warning instead of failing the pipeline.
+          set +e
+          snyk test --severity-threshold=high --fail-on=upgradable
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "Snyk SCA: no fixable high/critical issues." ;;
+            1) echo "::error::Snyk SCA found fixable high/critical vulnerabilities."; exit 1 ;;
+            *) echo "::warning::Snyk SCA did not complete (exit $code — network/API/no-manifest); not failing the build." ;;
+          esac
       - name: Skipped (no token)
         if: ${{ env.SNYK_TOKEN == '' }}
         run: echo "::notice::SNYK_TOKEN not set — skipping Snyk SCA (fork PR or secret missing)."
 
-  # ═══ Stage 2 — Test & Source Analysis (needs all of Stage 1) ════════════
-  # Unit tests + SAST + quality gate, all on the source. A failure here means we
-  # never spend a Docker build or push an image — the build is Stage 3.
+  hadolint:
+    name: Hadolint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Lint backend Dockerfile
+        uses: hadolint/hadolint-action@2a66e89f53d0771bb131a7fa31f3136336094aa6 # v3.4.0
+        with:
+          dockerfile: apps/backend/Dockerfile
+          config: .hadolint.yaml
+      - name: Lint frontend Dockerfile
+        uses: hadolint/hadolint-action@2a66e89f53d0771bb131a7fa31f3136336094aa6 # v3.4.0
+        with:
+          dockerfile: apps/frontend/Dockerfile
+          config: .hadolint.yaml
+
+  iac_scan:
+    name: IaC scan (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Trivy config scan (Dockerfiles + compose)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL
+          exit-code: '1'
+          trivyignores: .trivyignore
+
+  license_check:
+    name: License check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-ci
+      - name: Production dependency licenses
+        run: |
+          # Report the license spread, then fail on strong-copyleft / SSPL in any
+          # production dependency (project is MIT). Unknown licenses are surfaced
+          # in the summary; flip to a strict `--onlyAllow` allowlist once reviewed.
+          npx --yes license-checker-rseidelsohn@latest --production --summary
+          npx --yes license-checker-rseidelsohn@latest --production \
+            --failOn "GPL-1.0;GPL-2.0;GPL-2.0-only;GPL-2.0-or-later;GPL-3.0;GPL-3.0-only;GPL-3.0-or-later;AGPL-1.0;AGPL-3.0;AGPL-3.0-only;AGPL-3.0-or-later;LGPL-2.0;LGPL-2.1;LGPL-3.0;SSPL-1.0"
+
+  dependency_review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.1, LGPL-3.0, SSPL-1.0
 
   unit:
     name: Unit tests + coverage
-    needs: [lint, secrets, commitlint, snyk_sca]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-ci
       - name: Unit tests with coverage
         # CI=true (set by Actions) turns on vitest v8 coverage → coverage/*/lcov.info.
         run: npx nx run-many -t test
       - name: Upload coverage report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: coverage
           path: coverage/
@@ -136,138 +188,26 @@ jobs:
 
   codeql:
     name: SAST (CodeQL)
-    needs: [lint, secrets, commitlint, snyk_sca]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        uses: github/codeql-action/init@d1ba80a13dd99fba24a470575428917156a28b43 # v4
         with:
           languages: javascript-typescript
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@d1ba80a13dd99fba24a470575428917156a28b43 # v4
         with:
           category: '/language:javascript-typescript'
 
-  sonarqube:
-    name: Quality (SonarQube)
-    needs: [unit] # consumes the coverage artifact; gates the build via Stage 3
-    runs-on: ubuntu-latest
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0 # Sonar needs full history for new-code / blame
-      - name: Download coverage report
-        uses: actions/download-artifact@v7
-        with:
-          name: coverage
-          path: coverage
-      - name: SonarQube scan
-        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
-        uses: SonarSource/sonarqube-scan-action@v8 # reads sonar-project.properties
-      - name: SonarQube Quality Gate
-        # Enforce the gate on PRs only. The scan above still runs on push to `main`
-        # (keeps SonarCloud's new-code baseline current), but the gate poll 403s on
-        # branch analysis with the analysis token — and blocking is moot post-merge,
-        # since `main` is PR-only and the gate already ran on the PR.
-        if: ${{ github.event_name == 'pull_request' && env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
-        uses: SonarSource/sonarqube-quality-gate-action@v1
-        timeout-minutes: 5
-      - name: Skipped (no token / host)
-        if: ${{ env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == '' }}
-        run: echo "::notice::SONAR_TOKEN/SONAR_HOST_URL not fully set — skipping SonarQube."
-
-  # ═══ Stage 3 — Build & push images (needs ALL of Stage 2) ═══════════════
-  # Built once here, only after lint/unit/SAST/quality are green; reused by the
-  # container scan (Stage 4) and E2E (Stage 5).
-
-  build:
-    name: Build & push images
-    needs: [unit, codeql, sonarqube]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write # push images to GHCR
-    steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build & push backend image
-        # The Dockerfile compiles the app (nx build) inside, so this covers "build".
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: apps/backend/Dockerfile
-          push: true
-          tags: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
-          # Links the GHCR package to this repo so GITHUB_TOKEN can manage/prune it.
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          cache-from: type=gha,scope=backend
-          cache-to: type=gha,scope=backend,mode=max
-      - name: Build & push frontend image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: apps/frontend/Dockerfile
-          build-args: |
-            NEXT_PUBLIC_API_URL=/api
-          push: true
-          tags: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          cache-from: type=gha,scope=frontend
-          cache-to: type=gha,scope=frontend,mode=max
-
-  # ═══ Stage 4 — Container scan & Integration (needs Stage 3) ═════════════
-  # Both gate on the freshly built image; they run in parallel.
-
-  snyk_container:
-    name: Container scan (Snyk)
-    needs: [build]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read # pull the image from GHCR
-    env:
-      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Log in to GHCR
-        if: ${{ env.SNYK_TOKEN != '' }}
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Snyk Container test (backend image)
-        # Scans the OS packages + base image of the image built in Stage 3.
-        # Gate on CRITICAL severity only (team policy); high/medium/low are non-blocking.
-        if: ${{ env.SNYK_TOKEN != '' }}
-        run: |
-          docker pull "${BACKEND_IMAGE}:${GITHUB_SHA}"
-          npm install -g snyk
-          snyk container test "${BACKEND_IMAGE}:${GITHUB_SHA}" \
-            --file=apps/backend/Dockerfile --severity-threshold=critical
-      - name: Skipped (no token)
-        if: ${{ env.SNYK_TOKEN == '' }}
-        run: echo "::notice::SNYK_TOKEN not set — skipping Snyk Container scan (fork PR or secret missing)."
-
   integration:
     name: Integration tests (API + Postgres)
-    needs: [build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16.14-alpine
@@ -287,48 +227,165 @@ jobs:
       # `prisma migrate deploy` against it before the suite.
       TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/booking_test?schema=public
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-ci
       - run: npm run test:integration
 
-  # ═══ Stage 5 — E2E Tests (needs ALL of Stage 4; reuses the Stage 3 images) ═
+  # ── Build (off the analysis critical path) ─────────────────────────────────
+  # Build both images locally (no push), generate SBOMs, and export the images
+  # as an artifact so the scan / e2e / publish jobs reuse the SAME bits without
+  # rebuilding. Nothing is pushed here — see the `publish` job.
+  build:
+    name: Build images
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Build backend image (load, no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/backend/Dockerfile
+          load: true
+          tags: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+      - name: Build frontend image (load, no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: apps/frontend/Dockerfile
+          build-args: |
+            NEXT_PUBLIC_API_URL=/api
+          load: true
+          tags: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+      - name: SBOM — backend (syft)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          format: spdx-json
+          output-file: sbom-backend.spdx.json
+          upload-artifact: false
+      - name: SBOM — frontend (syft)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          format: spdx-json
+          output-file: sbom-frontend.spdx.json
+          upload-artifact: false
+      - name: Export images as an artifact
+        run: docker save "${BACKEND_IMAGE}:${GITHUB_SHA}" "${FRONTEND_IMAGE}:${GITHUB_SHA}" | gzip > images.tar.gz
+      - name: Upload images
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: images
+          path: images.tar.gz
+          retention-days: 1
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sboms
+          path: sbom-*.spdx.json
+          retention-days: 90
 
+  # ── Scan the built image before it can ever be published ───────────────────
+  container_scan:
+    name: Container scan (Snyk)
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download images
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: images
+      - name: Load images
+        run: docker load < images.tar.gz
+      - name: Snyk Container test (backend image)
+        if: ${{ env.SNYK_TOKEN != '' }}
+        run: |
+          npm install -g snyk
+          # Gate on CRITICAL only (ADR-0016); network/API errors degrade to a warning.
+          set +e
+          snyk container test "${BACKEND_IMAGE}:${GITHUB_SHA}" \
+            --file=apps/backend/Dockerfile --severity-threshold=critical
+          code=$?
+          set -e
+          case "$code" in
+            0) echo "Snyk Container: no critical issues." ;;
+            1) echo "::error::Snyk Container found critical vulnerabilities."; exit 1 ;;
+            *) echo "::warning::Snyk Container did not complete (exit $code); not failing the build." ;;
+          esac
+      - name: Skipped (no token)
+        if: ${{ env.SNYK_TOKEN == '' }}
+        run: echo "::notice::SNYK_TOKEN not set — skipping Snyk Container scan (fork PR or secret missing)."
+
+  # ── Quality gate (parallel; PR-only enforcement) ───────────────────────────
+  sonarqube:
+    name: Quality (SonarQube)
+    needs: [unit] # consumes the coverage artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # Sonar needs full history for new-code / blame
+      - name: Download coverage report
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: coverage
+          path: coverage
+      - name: SonarQube scan
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8
+      - name: SonarQube Quality Gate
+        # Enforce on PRs only. The scan above still runs on push to keep the
+        # new-code baseline current, but the gate poll 403s on branch analysis
+        # with the analysis token — and blocking is moot post-merge (main is PR-only).
+        if: ${{ github.event_name == 'pull_request' && env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: SonarSource/sonarqube-quality-gate-action@d304d050d930b02a896b0f85935344f023928496 # v1
+        timeout-minutes: 5
+      - name: Skipped (no token / host)
+        if: ${{ env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == '' }}
+        run: echo "::notice::SONAR_TOKEN/SONAR_HOST_URL not fully set — skipping SonarQube."
+
+  # ── E2E (needs the image + integration; NOT the container scan) ────────────
   e2e:
     name: E2E (Playwright)
-    needs: [snyk_container, integration]
+    needs: [build, integration]
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read # pull the pre-built images from GHCR
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/setup-node-ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
+      - name: Download images
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Pull pre-built images (built once in Stage 3 — no rebuild here)
+          name: images
+      - name: Load + tag images for compose
         run: |
-          docker pull "${BACKEND_IMAGE}:${GITHUB_SHA}"
-          docker pull "${FRONTEND_IMAGE}:${GITHUB_SHA}"
-          # Retag to the names docker-compose.yml expects so `up` reuses them.
+          docker load < images.tar.gz
           docker tag "${BACKEND_IMAGE}:${GITHUB_SHA}" meeting-room-booking-backend:latest
           docker tag "${FRONTEND_IMAGE}:${GITHUB_SHA}" meeting-room-booking-frontend:latest
       - name: Start the app stack
-        # Images are pre-built above; no --build. The backend entrypoint applies
-        # migrations + seed; --wait blocks until db and backend are healthy.
+        # Images are loaded above; no --build. The backend entrypoint migrates +
+        # seeds; --wait blocks until db, backend, and traefik report healthy.
         run: docker compose up -d --wait --wait-timeout 180 db backend frontend traefik
       - name: Run e2e tests
         env:
@@ -339,11 +396,77 @@ jobs:
         run: docker compose logs --no-color --tail 200
       - name: Upload Playwright report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: playwright-report
           path: playwright-report/
-          retention-days: 7
+          retention-days: 14
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  # ── Publish (default branch + tags only; never on feature branches/PRs) ────
+  # Pushes the SAME scanned image, then attaches provenance + SBOM attestations.
+  publish:
+    name: Publish images
+    needs: [build, container_scan, unit, integration, e2e]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+      id-token: write # keyless signing / attestations via GitHub OIDC
+      attestations: write # record the attestations
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download images
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: images
+      - name: Download SBOMs
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: sboms
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Load + push images
+        id: push
+        run: |
+          docker load < images.tar.gz
+          docker push "${BACKEND_IMAGE}:${GITHUB_SHA}"
+          docker push "${FRONTEND_IMAGE}:${GITHUB_SHA}"
+          {
+            echo "backend_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${BACKEND_IMAGE}:${GITHUB_SHA}" | cut -d@ -f2)"
+            echo "frontend_digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${FRONTEND_IMAGE}:${GITHUB_SHA}" | cut -d@ -f2)"
+          } >> "$GITHUB_OUTPUT"
+      - name: Attest backend provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.BACKEND_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.backend_digest }}
+          push-to-registry: true
+      - name: Attest frontend provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.FRONTEND_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.frontend_digest }}
+          push-to-registry: true
+      - name: Attest backend SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ${{ env.BACKEND_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.backend_digest }}
+          sbom-path: sbom-backend.spdx.json
+          push-to-registry: true
+      - name: Attest frontend SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ${{ env.FRONTEND_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.frontend_digest }}
+          sbom-path: sbom-frontend.spdx.json
+          push-to-registry: true

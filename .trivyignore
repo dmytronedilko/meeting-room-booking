@@ -1,0 +1,4 @@
+# Trivy ignore file — https://aquasecurity.github.io/trivy/latest/docs/configuration/filtering/
+# Suppress specific findings by ID (one per line), optionally with an expiry:
+#   CVE-2024-12345 exp:2026-12-31
+# Keep empty until a finding genuinely needs a documented, time-boxed waiver.

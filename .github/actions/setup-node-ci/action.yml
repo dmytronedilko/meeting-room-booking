@@ -1,0 +1,17 @@
+name: 'Setup Node + install'
+description: >-
+  Set up the repo-pinned Node (from .nvmrc) with npm caching and run `npm ci`.
+  The caller is responsible for `actions/checkout` first (checkout options vary
+  per job — some need full history).
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      with:
+        node-version-file: .nvmrc
+        cache: npm
+    - name: Install dependencies
+      shell: bash
+      run: npm ci

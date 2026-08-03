@@ -37,7 +37,8 @@ older ones — superseding is noted inline rather than by deleting history.
 | [0018](#adr-0018--trunk-based-flow-with-a-develop-mirror) | Trunk-based flow, `develop` mirror | ✅ | 2026-08-02 |
 | [0019](#adr-0019--docs-in-docs-mirrored-to-the-github-wiki) | `/docs` mirrored to the GitHub Wiki | ✅ | 2026-08-02 |
 | [0020](#adr-0020--traefik-replaces-nginx-as-the-single-entry-point) | Traefik replaces Nginx as the edge | ✅ | 2026-08-02 |
-| [0021](#adr-0021--build-after-source-analysis-ci-stage-reorder) | Build after source analysis (CI reorder) | ✅ | 2026-08-03 |
+| [0021](#adr-0021--build-after-source-analysis-ci-stage-reorder) | Build after source analysis (CI reorder) | 🔄 | 2026-08-03 |
+| [0022](#adr-0022--build-once-scan-the-artifact-publish-attested-images) | Build once, scan the artifact, publish attested images | ✅ | 2026-08-03 |
 
 ---
 
@@ -328,7 +329,7 @@ code); docs site generator (Docusaurus/MkDocs — more infra than needed).
 wiki's first page must be created via the UI before the backing repo exists.
 
 ### ADR-0021 · Build after source analysis (CI stage reorder)
-**Status:** ✅ Accepted · **Date:** 2026-08-03 · **Refines** the stage order in [ADR-0015](#adr-0015--five-stage-devsecops-ci-build-once-guarded-scanners)
+**Status:** 🔄 Superseded by [ADR-0022](#adr-0022--build-once-scan-the-artifact-publish-attested-images) · **Date:** 2026-08-03 · **Refines** the stage order in [ADR-0015](#adr-0015--five-stage-devsecops-ci-build-once-guarded-scanners)
 
 **Context.** ADR-0015's original order built the Docker images in Stage 2, in
 parallel with the unit tests and *before* the source analysis (SonarQube, CodeQL).
@@ -347,6 +348,46 @@ hook is bypassable, so CI is the real gate).
 **Consequences.** No image is built unless every source gate is green, so failed
 runs cost less and leave no stray GHCR images. Trade-off: on a fully-green run the
 image appears a little later, because the build now waits for the quality gate.
+
+### ADR-0022 · Build once, scan the artifact, publish attested images
+**Status:** ✅ Accepted · **Date:** 2026-08-03 · **Supersedes** [ADR-0021](#adr-0021--build-after-source-analysis-ci-stage-reorder) · **Refines** [ADR-0015](#adr-0015--five-stage-devsecops-ci-build-once-guarded-scanners)
+
+**Context.** ADR-0021's source-first ordering still put the image build *after*
+lint/unit/SAST/quality and then **pushed** the `:sha` image to GHCR *before* the
+container scan — so an unscanned image briefly existed in the registry, every
+failed build needed a GHCR prune, and the analysis jobs sat on the critical path.
+The pipeline also had no build attestations, floating (tag-pinned) Action
+references, and no Dockerfile / IaC / license gates.
+**Decision.** Move to **build-once, publish-later**. Every source check — lint,
+secrets, commitlint, SCA, Hadolint, Trivy IaC, license-check, dependency-review,
+unit, CodeQL, integration, SonarQube — runs **in parallel from t=0**. `build`
+compiles both images with `load: true` (**no push**), generates SPDX **SBOMs**
+(syft), and uploads the images as a one-day artifact. `container_scan` (Snyk,
+CRITICAL-only per [ADR-0016](#adr-0016--snyk-gates-on-critical-severity-only))
+and `e2e` reuse **those exact bits** — nothing is rebuilt. Images reach GHCR only
+in `publish`, which runs **on push to `main` / tags only** (never on PRs or
+feature branches) after build + container scan + unit + integration + e2e are
+green, then attaches keyless (OIDC) **provenance + SBOM attestations**. Hardening
+throughout: all Actions **pinned to commit SHAs**, a `timeout-minutes` on every
+job, a shared `setup-node-ci` composite (reads `.nvmrc`), and a non-blocking
+**nightly-security** workflow (Snyk unfiltered by fixability + full-history
+gitleaks) that means "review", not "blocked merge".
+**Alternatives.** Keep pushing the `:sha` image pre-scan (ADR-0021) — simpler,
+but publishes unscanned bits and needs the prune job; gate the build behind the
+analysis jobs for maximum fail-fast — rejected, it re-lengthens the critical path
+for no safety gain now that `publish` is separately gated; scan in-registry after
+push — rejected in favour of scanning the local artifact so a bad image never
+lands in GHCR at all.
+**Consequences.** Nothing is published until it has been built **and** scanned,
+and what ships is provable (provenance + SBOM). PR feedback is faster — the
+critical path is Build → E2E, with analysis alongside — and Hadolint / Trivy /
+license-check raise the supply-chain bar (Hadolint and license-check start in a
+soft posture — see `.hadolint.yaml` and the `--failOn` list — to be tightened
+once the baseline is clean). Branch protection still gates merges
+([ADR-0017](#adr-0017--protect-main-gate-merges-on-all-ci-checks)), now on this
+check set: the renamed **`Build images`** check replaces **`Build & push
+images`**. Trade-off: `publish` adds a short post-merge step on `main`, and the
+images artifact briefly holds both images between jobs.
 
 ## Networking & edge
 

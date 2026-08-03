@@ -23,13 +23,14 @@ jobs:
   prune:
     name: Prune ${{ matrix.image }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false # attempt both images even if one fails
       matrix:
         image: [meeting-room-booking-backend, meeting-room-booking-frontend]
     steps:
       - name: Delete old versions of ${{ matrix.image }}
-        uses: actions/delete-package-versions@v5
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5
         with:
           owner: ${{ github.repository_owner }}
           package-name: ${{ matrix.image }}

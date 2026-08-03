@@ -1,0 +1,15 @@
+# hadolint config — https://github.com/hadolint/hadolint
+# Fail the build only on ERROR-level findings (real problems: unpinned `latest`
+# base tags, ADD over COPY, root shells, etc.). Warnings are reported but not
+# fatal — tighten to `warning` later if desired.
+failure-threshold: error
+
+ignored:
+  # apk add without a version pin. The base image is already pinned
+  # (node:26.5.1-alpine), and letting Alpine security patches roll in is the
+  # intended behaviour — pinning apk versions would freeze CVE fixes.
+  - DL3018
+  # npm install without a version pin. Dependencies are locked via
+  # package-lock.json; the backend runtime image's `npm install` step is a
+  # deliberate re-install of the Nx-pruned manifest (see apps/backend/Dockerfile).
+  - DL3016

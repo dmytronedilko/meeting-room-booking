@@ -1,0 +1,52 @@
+# Dependabot keeps dependencies current so the security gates have something to
+# act on: the pipeline *detects* vulnerabilities, this opens the update PRs.
+# commit-message.prefix is Conventional (`chore(deps): …` / `ci(deps): …`) so the
+# commitlint gate accepts Dependabot's PRs.
+version: 2
+updates:
+  # npm workspace — the root manifest drives the Nx monorepo.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # Batch minor/patch to cut PR noise; majors stay individual for review.
+      npm-minor-patch:
+        update-types: [minor, patch]
+    labels: [dependencies]
+
+  # GitHub Actions — keep the SHA-pinned actions current (Dependabot updates the
+  # pin + its version comment).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        patterns: ['*']
+    labels: [dependencies]
+
+  # Base images in the two Dockerfiles.
+  - package-ecosystem: docker
+    directory: /apps/backend
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    labels: [dependencies]
+  - package-ecosystem: docker
+    directory: /apps/frontend
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    labels: [dependencies]

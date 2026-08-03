@@ -187,20 +187,20 @@ commit is still caught.
 1. **Sanity & Dependencies** — `Lint (Biome)`, `Secrets (gitleaks)`,
    `Commit messages` (`scripts/lint-commit-msg.sh`) and `SCA (Snyk)` — Snyk Open
    Source scanning of `package.json` dependencies.
-2. **Build & Unit** — `Build & push images` builds the backend + frontend Docker
-   images **once** and pushes them to GHCR tagged with the commit SHA;
-   `Unit tests` runs Vitest with v8 coverage and uploads `lcov` as an artifact.
-3. **Deep Analysis** (parallel) — `Quality (SonarQube)` downloads the coverage
-   artifact and enforces the Quality Gate; `SAST (CodeQL)` scans JS/TS;
-   `Container scan (Snyk)` pulls the Stage-2 backend image and scans its OS /
-   base-image layers.
-4. **Integration** — `test:integration` against a Postgres service, after all of
-   Stage 3 passes.
+2. **Test & Analysis** (parallel) — `Unit tests` (Vitest v8 coverage, uploaded as
+   `lcov`), `SAST (CodeQL)` (JS/TS), and `Quality (SonarQube)` (downloads the
+   coverage and enforces the Quality Gate). All run on the source — no image yet.
+3. **Build** — `Build & push images` builds the backend + frontend Docker images
+   **once** and pushes them to GHCR tagged with the commit SHA — only after every
+   Stage-2 gate is green, so a failing lint/test/scan never wastes a build.
+4. **Container scan & Integration** (parallel) — `Container scan (Snyk)` pulls the
+   Stage-3 backend image and scans its OS / base-image layers; `test:integration`
+   runs against a Postgres service.
 5. **E2E** — **pulls** the pre-built images from GHCR (no rebuild), boots the Docker
    stack (`db`, `backend`, `frontend`, `traefik`) and runs Playwright; the HTML report
    is uploaded as an artifact.
 
-The image is built once (Stage 2) and reused by the container scan and E2E, so no
+The image is built once (Stage 3) and reused by the container scan and E2E, so no
 build runs twice. The external scanners are **guarded**: they enforce when their
 secret is present and skip cleanly (green, with a notice) when it isn't — so fork
 PRs and pre-secret runs stay healthy.

@@ -37,6 +37,7 @@ older ones — superseding is noted inline rather than by deleting history.
 | [0018](#adr-0018--trunk-based-flow-with-a-develop-mirror) | Trunk-based flow, `develop` mirror | ✅ | 2026-08-02 |
 | [0019](#adr-0019--docs-in-docs-mirrored-to-the-github-wiki) | `/docs` mirrored to the GitHub Wiki | ✅ | 2026-08-02 |
 | [0020](#adr-0020--traefik-replaces-nginx-as-the-single-entry-point) | Traefik replaces Nginx as the edge | ✅ | 2026-08-02 |
+| [0021](#adr-0021--build-after-source-analysis-ci-stage-reorder) | Build after source analysis (CI reorder) | ✅ | 2026-08-03 |
 
 ---
 
@@ -325,6 +326,27 @@ flat wiki. `.github/workflows/publish-wiki.yml` runs the sync on every push to
 code); docs site generator (Docusaurus/MkDocs — more infra than needed).
 **Consequences.** One source, PR-reviewed, auto-published. One-time setup: the
 wiki's first page must be created via the UI before the backing repo exists.
+
+### ADR-0021 · Build after source analysis (CI stage reorder)
+**Status:** ✅ Accepted · **Date:** 2026-08-03 · **Refines** the stage order in [ADR-0015](#adr-0015--five-stage-devsecops-ci-build-once-guarded-scanners)
+
+**Context.** ADR-0015's original order built the Docker images in Stage 2, in
+parallel with the unit tests and *before* the source analysis (SonarQube, CodeQL).
+So a lint slip, a failing unit test, or a SAST/quality finding still paid for a
+full image build and left a stray `:sha` image in GHCR (which the cleanup job then
+has to prune).
+**Decision.** Reorder into source-first, build-later: **① Sanity & Deps →
+② Test & Analysis** (unit + CodeQL + SonarQube, all on the source) **→ ③ Build &
+push images → ④ Container scan + Integration → ⑤ E2E**. The image is still built
+**once** and reused by the container scan and E2E. gitleaks stays in CI as the
+enforcement layer for a bypassed pre-commit hook — only the ordering changes.
+**Alternatives.** Keep build in Stage 2 (fastest time-to-image, but wastes builds
+on bad source); build after unit tests only, leaving SonarQube/CodeQL after build
+(smaller change, less fail-fast); drop gitleaks from CI (rejected — the pre-commit
+hook is bypassable, so CI is the real gate).
+**Consequences.** No image is built unless every source gate is green, so failed
+runs cost less and leave no stray GHCR images. Trade-off: on a fully-green run the
+image appears a little later, because the build now waits for the quality gate.
 
 ## Networking & edge
 

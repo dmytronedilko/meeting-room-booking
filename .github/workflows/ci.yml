@@ -19,8 +19,10 @@ env:
   # the images, and `.nvmrc` all build/test/ship on the identical version.
   NODE_VERSION: '26.5.1'
   NX_DAEMON: 'false'
-  # Images are built once in Stage 2 and pushed to GHCR under the commit SHA, then
-  # pulled by the container scan (Stage 3) and E2E (Stage 5) — no image is built twice.
+  # Images are built once in Stage 3 — only after the source gates pass — and
+  # pushed to GHCR under the commit SHA, then pulled by the container scan
+  # (Stage 4) and E2E (Stage 5). No image is built twice, and a failing source
+  # check never wastes a build or leaves a stray SHA-tagged image in GHCR.
   BACKEND_IMAGE: ghcr.io/${{ github.repository }}-backend
   FRONTEND_IMAGE: ghcr.io/${{ github.repository }}-frontend
 
@@ -106,11 +108,84 @@ jobs:
         if: ${{ env.SNYK_TOKEN == '' }}
         run: echo "::notice::SNYK_TOKEN not set — skipping Snyk SCA (fork PR or secret missing)."
 
-  # ═══ Stage 2 — Build & Unit Tests (needs all of Stage 1) ════════════════
+  # ═══ Stage 2 — Test & Source Analysis (needs all of Stage 1) ════════════
+  # Unit tests + SAST + quality gate, all on the source. A failure here means we
+  # never spend a Docker build or push an image — the build is Stage 3.
+
+  unit:
+    name: Unit tests + coverage
+    needs: [lint, secrets, commitlint, snyk_sca]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Unit tests with coverage
+        # CI=true (set by Actions) turns on vitest v8 coverage → coverage/*/lcov.info.
+        run: npx nx run-many -t test
+      - name: Upload coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  codeql:
+    name: SAST (CodeQL)
+    needs: [lint, secrets, commitlint, snyk_sca]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: '/language:javascript-typescript'
+
+  sonarqube:
+    name: Quality (SonarQube)
+    needs: [unit] # consumes the coverage artifact; gates the build via Stage 3
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # Sonar needs full history for new-code / blame
+      - name: Download coverage report
+        uses: actions/download-artifact@v7
+        with:
+          name: coverage
+          path: coverage
+      - name: SonarQube scan
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: SonarSource/sonarqube-scan-action@v8 # reads sonar-project.properties
+      - name: SonarQube Quality Gate
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+      - name: Skipped (no token / host)
+        if: ${{ env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == '' }}
+        run: echo "::notice::SONAR_TOKEN/SONAR_HOST_URL not fully set — skipping SonarQube."
+
+  # ═══ Stage 3 — Build & push images (needs ALL of Stage 2) ═══════════════
+  # Built once here, only after lint/unit/SAST/quality are green; reused by the
+  # container scan (Stage 4) and E2E (Stage 5).
 
   build:
     name: Build & push images
-    needs: [lint, secrets, commitlint, snyk_sca]
+    needs: [unit, codeql, sonarqube]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -151,78 +226,12 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
 
-  unit:
-    name: Unit tests + coverage
-    needs: [lint, secrets, commitlint, snyk_sca]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci
-      - name: Unit tests with coverage
-        # CI=true (set by Actions) turns on vitest v8 coverage → coverage/*/lcov.info.
-        run: npx nx run-many -t test
-      - name: Upload coverage report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage
-          path: coverage/
-          retention-days: 7
-
-  # ═══ Stage 3 — Deep Analysis (needs Stage 2; 3 jobs run in parallel) ════
-
-  sonarqube:
-    name: Quality (SonarQube)
-    needs: [build, unit]
-    runs-on: ubuntu-latest
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0 # Sonar needs full history for new-code / blame
-      - name: Download coverage report
-        uses: actions/download-artifact@v7
-        with:
-          name: coverage
-          path: coverage
-      - name: SonarQube scan
-        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
-        uses: SonarSource/sonarqube-scan-action@v8 # reads sonar-project.properties
-      - name: SonarQube Quality Gate
-        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' }}
-        uses: SonarSource/sonarqube-quality-gate-action@v1
-        timeout-minutes: 5
-      - name: Skipped (no token / host)
-        if: ${{ env.SONAR_TOKEN == '' || env.SONAR_HOST_URL == '' }}
-        run: echo "::notice::SONAR_TOKEN/SONAR_HOST_URL not fully set — skipping SonarQube."
-
-  codeql:
-    name: SAST (CodeQL)
-    needs: [build, unit]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@v7
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: javascript-typescript
-      - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4
-        with:
-          category: '/language:javascript-typescript'
+  # ═══ Stage 4 — Container scan & Integration (needs Stage 3) ═════════════
+  # Both gate on the freshly built image; they run in parallel.
 
   snyk_container:
     name: Container scan (Snyk)
-    needs: [build, unit]
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -239,7 +248,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Snyk Container test (backend image)
-        # Scans the OS packages + base image of the image built in Stage 2.
+        # Scans the OS packages + base image of the image built in Stage 3.
         # Gate on CRITICAL severity only (team policy); high/medium/low are non-blocking.
         if: ${{ env.SNYK_TOKEN != '' }}
         run: |
@@ -251,11 +260,9 @@ jobs:
         if: ${{ env.SNYK_TOKEN == '' }}
         run: echo "::notice::SNYK_TOKEN not set — skipping Snyk Container scan (fork PR or secret missing)."
 
-  # ═══ Stage 4 — Integration Tests (needs ALL of Stage 3) ═════════════════
-
   integration:
     name: Integration tests (API + Postgres)
-    needs: [sonarqube, codeql, snyk_container]
+    needs: [build]
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -284,11 +291,11 @@ jobs:
       - run: npm ci
       - run: npm run test:integration
 
-  # ═══ Stage 5 — E2E Tests (needs Integration; reuses Stage 2 images) ═════
+  # ═══ Stage 5 — E2E Tests (needs ALL of Stage 4; reuses the Stage 3 images) ═
 
   e2e:
     name: E2E (Playwright)
-    needs: [integration]
+    needs: [snyk_container, integration]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -308,7 +315,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Pull pre-built images (built once in Stage 2 — no rebuild here)
+      - name: Pull pre-built images (built once in Stage 3 — no rebuild here)
         run: |
           docker pull "${BACKEND_IMAGE}:${GITHUB_SHA}"
           docker pull "${FRONTEND_IMAGE}:${GITHUB_SHA}"

@@ -209,12 +209,12 @@ commit is still caught.
 | Stage | Jobs |
 | --- | --- |
 | **1 · Sanity & Deps** | Lint (Biome) · Secrets (gitleaks) · Commit messages · SCA (Snyk) |
-| **2 · Build & Unit** | Build & push images (GHCR) · Unit tests + coverage |
-| **3 · Deep Analysis** | Quality (SonarQube) · SAST (CodeQL) · Container scan (Snyk) |
-| **4 · Integration** | `test:integration` against Postgres |
+| **2 · Test & Analysis** | Unit tests + coverage · SAST (CodeQL) · Quality (SonarQube) |
+| **3 · Build** | Build & push both images to GHCR (once, after Stage 2 is green) |
+| **4 · Container scan & Integration** | Container scan (Snyk) · `test:integration` against Postgres |
 | **5 · E2E** | Playwright against the pulled Docker stack |
 
-The Docker image is built **once** (Stage 2) and reused by the container scan
+The Docker image is built **once** (Stage 3) and reused by the container scan
 and E2E. External scanners **enforce** when their secret is present and **skip
 cleanly** (green, with a notice) when it isn't — so fork PRs stay healthy.
 

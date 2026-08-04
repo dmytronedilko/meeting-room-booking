@@ -201,22 +201,21 @@ gitGraph
 
 ### CI gates every PR
 
-`.github/workflows/ci.yml` is a **5-stage DevSecOps pipeline** (runs on every
-push to `main` and every PR). Stages run in sequence; jobs within a stage run in
-parallel. Every local hook check is duplicated in Stage 1, so a `--no-verify`
-commit is still caught.
+`.github/workflows/ci.yml` is the **DevSecOps pipeline** (ADR-0022; runs on every
+push and PR). All source checks run **in parallel from t=0**, so a `--no-verify`
+commit is still caught — every local hook check is re-run here.
 
-| Stage | Jobs |
+| Group | Jobs |
 | --- | --- |
-| **1 · Sanity & Deps** | Lint (Biome) · Secrets (gitleaks) · Commit messages · SCA (Snyk) |
-| **2 · Test & Analysis** | Unit tests + coverage · SAST (CodeQL) · Quality (SonarQube) |
-| **3 · Build** | Build & push both images to GHCR (once, after Stage 2 is green) |
-| **4 · Container scan & Integration** | Container scan (Snyk) · `test:integration` against Postgres |
-| **5 · E2E** | Playwright against the pulled Docker stack |
+| **Source checks** (parallel) | Lint (Biome) · Secrets (gitleaks) · Commit messages · SCA (Snyk) · Hadolint · IaC scan (Trivy) · License check · Unit tests + coverage · SAST (CodeQL) · Quality (SonarQube) · Integration |
+| **Build → scan** | Build both images once (loaded, **not** pushed) → Container scan (Snyk, both images) |
+| **E2E** | Playwright against the built stack |
+| **Publish** (push to `main`/tags only) | Push to GHCR + SBOM & provenance attestations |
 
-The Docker image is built **once** (Stage 3) and reused by the container scan
-and E2E. External scanners **enforce** when their secret is present and **skip
-cleanly** (green, with a notice) when it isn't — so fork PRs stay healthy.
+The images are built **once** and reused by the container scan and E2E; nothing is
+published on a PR. External scanners **enforce** when their secret is set and
+**fail** on a trusted run (push / same-repo PR) if it's missing — they skip cleanly
+only on fork PRs.
 
 ## 🪝 Git hooks
 

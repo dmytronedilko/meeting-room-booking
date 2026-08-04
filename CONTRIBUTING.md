@@ -82,12 +82,14 @@ npm run test:e2e                      # Playwright (needs the stack up on :80)
 
 ## 🔎 What CI checks
 
-Every push to `main` and every PR runs a **5-stage DevSecOps pipeline**
-(`.github/workflows/ci.yml`): **① Sanity & Deps** (Biome, gitleaks, commit
-messages, Snyk SCA) → **② Build & Unit** (Docker images + Vitest coverage) →
-**③ Deep Analysis** (SonarQube, CodeQL, Snyk container scan) → **④ Integration**
-→ **⑤ E2E**. External scanners enforce when their secret is present and skip
-cleanly otherwise.
+Every push and every PR runs the **DevSecOps pipeline** (`.github/workflows/ci.yml`,
+ADR-0022). All source checks run **in parallel from t=0** — Biome, gitleaks, commit
+messages, Snyk SCA, Hadolint, Trivy IaC, licenses, unit tests + coverage, CodeQL,
+SonarQube, integration. Images build **once** (loaded, not pushed), get scanned
+(Snyk container, both images), then E2E runs against them. **Publishing** to GHCR —
+with SBOM + provenance attestations — happens **only on push to `main`/tags**.
+External scanners **enforce** when their secret is set and **fail** on a trusted run
+if it's missing; they skip cleanly only on fork PRs.
 
 ## 📚 Docs & the Wiki
 

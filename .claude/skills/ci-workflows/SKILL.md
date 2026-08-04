@@ -12,9 +12,9 @@ description: >-
 
 # Working on CI workflows
 
-Authoritative design: `docs/Decision-Log.md` ADR-0015/0016/0022. The
-`CONTRIBUTING.md` / `Code-Style.md` "5-stage" descriptions are **stale** — follow
-`.github/workflows/ci.yml`, not them.
+Authoritative design: `.github/workflows/ci.yml` + `docs/Decision-Log.md`
+ADR-0015/0016/0022. `CONTRIBUTING.md` / `Code-Style.md` summarize the pipeline; if
+they ever drift from `ci.yml`, `ci.yml` wins.
 
 ## Non-negotiable rules
 - **Pin every action to a full commit SHA + `# vX` comment.** No moving tags.

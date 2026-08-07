@@ -42,8 +42,8 @@ docker compose up --build
 ```
 
 That's it. On a fresh clone this brings up the app, database, proxy, Prometheus,
-Grafana, and the ELK stack. The **backend container applies Prisma migrations
-(`migrate deploy`) and the idempotent demo seed on every start** — no manual DB
+Grafana, and the ELK stack. The **backend container applies the Drizzle
+migrations and the idempotent demo seed on every start** — no manual DB
 steps required.
 
 Then open:
@@ -71,8 +71,8 @@ Docker. This is the recommended day-to-day setup.
 npm install
 ```
 
-`postinstall` generates the Prisma client, and `prepare` wires the git hooks
-(`git config core.hooksPath .githooks`) — so hooks are active immediately.
+`prepare` wires the git hooks (`git config core.hooksPath .githooks`) — so hooks
+are active immediately. Drizzle needs no client-generation step.
 
 ### 2. Configure environment
 
@@ -93,12 +93,12 @@ docker compose up -d db   # Postgres only; also creates the booking_test databas
 ### 4. Migrate & seed
 
 ```bash
-npm run prisma:migrate    # apply migrations to the dev database
+npm run db:migrate        # apply migrations to the dev database
 npm run seed              # rooms, two test users, and demo bookings
 ```
 
-> These two run **once** by hand in dev mode. (In Docker/Path A the backend does
-> `migrate deploy` + seed automatically on every start.)
+> These two run **once** by hand in dev mode. (In Docker/Path A the backend
+> applies migrations + seed automatically on every start.)
 
 ### 5. Run the apps
 
@@ -141,7 +141,7 @@ committed; Docker Compose supplies sane defaults for local use.
 
 | Variable | Required | Default | Description |
 | --- | :---: | --- | --- |
-| `POSTGRES_USER` | ✅ | `postgres` | DB user for the Compose `db` service & Prisma |
+| `POSTGRES_USER` | ✅ | `postgres` | DB user for the Compose `db` service & the app |
 | `POSTGRES_PASSWORD` | ✅ | `postgres` | DB password |
 | `POSTGRES_DB` | ✅ | `booking` | Primary database name |
 
@@ -149,7 +149,7 @@ committed; Docker Compose supplies sane defaults for local use.
 
 | Variable | Required | Default | Description |
 | --- | :---: | --- | --- |
-| `DATABASE_URL` | ✅ | `postgresql://postgres:postgres@localhost:5432/booking?schema=public` | Prisma connection string (dev points at the dockerized DB on `localhost:5432`) |
+| `DATABASE_URL` | ✅ | `postgresql://postgres:postgres@localhost:5432/booking?schema=public` | Postgres connection string used by Drizzle (dev points at the dockerized DB on `localhost:5432`) |
 | `JWT_SECRET` | ✅ | `change-me-in-production` | **Change in any real deployment.** Signs session JWTs |
 | `JWT_TTL` | ⬜ | `24h` | Token lifetime (`ms`-style string, e.g. `24h`, `30m`) |
 | `APP_URL` | ⬜ | `http://localhost:3000` | Base URL used to build the email-confirmation link written to the server log |
@@ -164,7 +164,7 @@ committed; Docker Compose supplies sane defaults for local use.
 
 | Variable | Required | Default | Description |
 | --- | :---: | --- | --- |
-| `NEXT_PUBLIC_API_URL` | ✅ | `http://localhost:3001/api` | API base. **Baked in at build time.** In Docker it is `/api` (same origin behind Traefik) |
+| `NEXT_PUBLIC_API_URL` | ✅ | `http://localhost:3001/api` | API base. **Baked in at build time.** In Docker it is `/api` (same origin behind the Nginx proxy) |
 
 ### Tests
 
@@ -196,7 +196,7 @@ npm run test:e2e                     # Playwright browser e2e (needs the full st
 - **Integration tests** run against the separate `booking_test` database and
   apply migrations before the suite.
 - **E2E** drives the real app in a browser; bring the stack up first:
-  `docker compose up -d --wait db backend frontend traefik`.
+  `docker compose up -d --wait db backend frontend nginx`.
 
 ## 🪝 Git hooks (automatic, fast)
 
@@ -218,7 +218,7 @@ nothing slips through. See **[Code Style](Code-Style)** for the rules.
 | Symptom | Likely cause & fix |
 | --- | --- |
 | `ECONNREFUSED :5432` on backend start | Postgres isn't up → `docker compose up -d db` |
-| Prisma client type errors after pulling | Regenerate: `npm install` (runs `prisma generate`) or `npx prisma generate --schema apps/backend/prisma/schema.prisma` |
+| `relation "Booking" already exists` when migrating an existing dev DB | It predates Drizzle's migration journal — reset it once: `docker compose down -v` (or drop the database), then re-migrate |
 | Login works but booking returns **403** | Email not confirmed — open the confirmation link printed in the **backend log**, or use a seeded (pre-confirmed) account |
 | Frontend calls the wrong API URL | `NEXT_PUBLIC_API_URL` is baked at build time — change `.env` and restart/rebuild the frontend |
 | Port already in use (`3000`/`3001`/`5432`) | Another instance is running — stop it, or change `PORT` / the Compose port mapping |

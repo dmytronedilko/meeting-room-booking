@@ -2,8 +2,6 @@
 FROM node:26.5.1-alpine AS deps
 WORKDIR /workspace
 COPY package.json package-lock.json ./
-# The postinstall hook runs `prisma generate`, which needs the schema.
-COPY apps/backend/prisma ./apps/backend/prisma
 RUN npm ci --no-audit --no-fund
 
 # ---------- Stage 2: build the app with Nx ----------
@@ -17,15 +15,13 @@ FROM node:26.5.1-alpine AS runner
 ENV NODE_ENV=production
 WORKDIR /app
 
-# Prisma engines need OpenSSL on Alpine.
-RUN apk add --no-cache openssl
-
 # Nx generated a pruned package.json (exact versions) next to the bundle.
 # `npm install` instead of `npm ci`: the Nx-pruned lockfile can miss deduped
 # transitive deps (e.g. fastify's process-warning), while top-level pins keep
 # the install reproducible enough for a runtime image.
 COPY --from=build /workspace/dist/apps/backend ./
-COPY apps/backend/prisma ./prisma
+# The SQL migrations the bundled migrate.js applies at startup.
+COPY apps/backend/drizzle ./drizzle
 COPY apps/backend/docker-entrypoint.sh ./docker-entrypoint.sh
 
 # Nx's generatePackageJson drops the root `overrides`, so re-add the
@@ -36,14 +32,12 @@ COPY apps/backend/docker-entrypoint.sh ./docker-entrypoint.sh
 RUN node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('./package.json'));p.overrides={...(p.overrides||{}),'@fastify/static':p.dependencies['@fastify/static']};fs.writeFileSync('./package.json',JSON.stringify(p,null,2)+'\n');" \
   && rm -f package-lock.json \
   && npm install --omit=dev --no-audit --no-fund \
-  && npm install --no-save --no-audit --no-fund prisma@7.9.1 \
-  && npx prisma generate --schema ./prisma/schema.prisma \
-  && printf '%s\n' "import { defineConfig } from 'prisma/config';" "export default defineConfig({ schema: 'prisma/schema.prisma', datasource: { url: process.env.DATABASE_URL ?? '' } });" > prisma.config.ts \
   && npm cache clean --force \
   && chmod +x ./docker-entrypoint.sh \
   # Harden the runtime image by removing npm/corepack — build-time-only tooling.
   # Their bundled deps (tar, pacote, sigstore, brace-expansion, picomatch) would
-  # otherwise ship as image CVEs; the entrypoint runs prisma directly, not via npx.
+  # otherwise ship as image CVEs; the entrypoint runs the bundled migrate.js
+  # directly, not via npx.
   && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
     /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 

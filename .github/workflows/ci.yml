@@ -283,8 +283,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      # The integration vitest config reads this; its globalSetup runs
-      # `prisma migrate deploy` against it before the suite.
+      # The integration vitest config reads this; its globalSetup runs the
+      # Drizzle migrator against it before the suite.
       TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/booking_test?schema=public
     steps:
       - uses: actions/checkout@v7
@@ -329,7 +329,7 @@ jobs:
       - name: Start the app stack
         # Images are pre-built above; no --build. The backend entrypoint applies
         # migrations + seed; --wait blocks until db and backend are healthy.
-        run: docker compose up -d --wait --wait-timeout 180 db backend frontend traefik
+        run: docker compose up -d --wait --wait-timeout 180 db backend frontend nginx
       - name: Run e2e tests
         env:
           E2E_BASE_URL: http://localhost

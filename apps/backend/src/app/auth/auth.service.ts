@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -11,10 +12,12 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { AuthResponseDto, UserDto } from '@office/shared';
-import { Prisma, User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { eq } from 'drizzle-orm';
 
-import { PrismaService } from '../prisma/prisma.service';
+import { DRIZZLE, type DrizzleDB } from '../db/database.module';
+import { isPgError, PG_UNIQUE_VIOLATION } from '../../db/pg-errors';
+import { type User, users } from '../../db/schema';
 import type { JwtPayload } from './auth.types';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -27,7 +30,7 @@ export class AuthService {
   private readonly appUrl: string;
 
   constructor(
-    private readonly prisma: PrismaService,
+    @Inject(DRIZZLE) private readonly db: DrizzleDB,
     private readonly jwtService: JwtService,
     config: ConfigService,
   ) {
@@ -38,18 +41,19 @@ export class AuthService {
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
     const emailConfirmToken = randomUUID();
     try {
-      const user = await this.prisma.user.create({
-        data: {
+      const [user] = await this.db
+        .insert(users)
+        .values({
           name: dto.name.trim(),
           email: dto.email.toLowerCase(),
           passwordHash,
           emailConfirmToken,
-        },
-      });
+        })
+        .returning();
       this.logConfirmationLink(user.email, emailConfirmToken);
       return this.buildAuthResponse(user);
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      if (isPgError(error, PG_UNIQUE_VIOLATION)) {
         throw new ConflictException('This email is already registered');
       }
       throw error;
@@ -57,8 +61,8 @@ export class AuthService {
   }
 
   async login(dto: LoginDto): Promise<AuthResponseDto> {
-    const user = await this.prisma.user.findUnique({
-      where: { email: dto.email.toLowerCase() },
+    const user = await this.db.query.users.findFirst({
+      where: eq(users.email, dto.email.toLowerCase()),
     });
     const passwordMatches = user && (await bcrypt.compare(dto.password, user.passwordHash));
     if (!user || !passwordMatches) {
@@ -69,20 +73,23 @@ export class AuthService {
 
   /** Confirms the email that owns `token`. Idempotent tokens are single-use. */
   async confirmEmail(token: string): Promise<UserDto> {
-    const user = await this.prisma.user.findUnique({ where: { emailConfirmToken: token } });
+    const user = await this.db.query.users.findFirst({
+      where: eq(users.emailConfirmToken, token),
+    });
     if (!user) {
       throw new BadRequestException('Invalid or already-used confirmation link');
     }
-    const confirmed = await this.prisma.user.update({
-      where: { id: user.id },
-      data: { emailConfirmedAt: new Date(), emailConfirmToken: null },
-    });
+    const [confirmed] = await this.db
+      .update(users)
+      .set({ emailConfirmedAt: new Date(), emailConfirmToken: null })
+      .where(eq(users.id, user.id))
+      .returning();
     return this.toUserDto(confirmed);
   }
 
   /** Re-issues and re-logs a confirmation link for a still-unconfirmed user. */
   async resendConfirmation(userId: string): Promise<void> {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.db.query.users.findFirst({ where: eq(users.id, userId) });
     if (!user) {
       throw new NotFoundException('User not found');
     }
@@ -90,13 +97,13 @@ export class AuthService {
       return; // Already confirmed — nothing to resend.
     }
     const emailConfirmToken = randomUUID();
-    await this.prisma.user.update({ where: { id: user.id }, data: { emailConfirmToken } });
+    await this.db.update(users).set({ emailConfirmToken }).where(eq(users.id, user.id));
     this.logConfirmationLink(user.email, emailConfirmToken);
   }
 
   /** The current user's profile (used by the frontend to reflect live state). */
   async getMe(userId: string): Promise<UserDto> {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.db.query.users.findFirst({ where: eq(users.id, userId) });
     if (!user) {
       throw new UnauthorizedException('User not found');
     }

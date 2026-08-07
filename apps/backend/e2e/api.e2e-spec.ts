@@ -10,13 +10,15 @@ import {
   type UserDto,
 } from '@office/shared';
 import { fromZonedTime } from 'date-fns-tz';
+import { asc, eq, inArray } from 'drizzle-orm';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { AppModule } from '../src/app/app.module';
+import { DRIZZLE, type DrizzleDB } from '../src/app/db/database.module';
 import { NotificationsService } from '../src/app/notifications/notifications.service';
-import { PrismaService } from '../src/app/prisma/prisma.service';
 import { configureApp } from '../src/app/setup';
+import { bookings, rooms, users } from '../src/db/schema';
 
 const ROOM_ID = '99999999-0000-4000-8000-000000000001';
 
@@ -28,7 +30,7 @@ const iso = (time: string): string =>
 
 describe('API (integration)', () => {
   let app: NestFastifyApplication;
-  let prisma: PrismaService;
+  let db: DrizzleDB;
   let user1: AuthResponseDto;
   let user2: AuthResponseDto;
 
@@ -42,11 +44,11 @@ describe('API (integration)', () => {
     // Fastify must finish route registration before supertest hits the server.
     await app.getHttpAdapter().getInstance().ready();
 
-    prisma = app.get(PrismaService);
-    await prisma.booking.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.room.deleteMany();
-    await prisma.room.create({ data: { id: ROOM_ID, name: 'E2E Room', floor: 3, capacity: 6 } });
+    db = app.get(DRIZZLE);
+    await db.delete(bookings);
+    await db.delete(users);
+    await db.delete(rooms);
+    await db.insert(rooms).values({ id: ROOM_ID, name: 'E2E Room', floor: 3, capacity: 6 });
   });
 
   afterAll(async () => {
@@ -86,9 +88,9 @@ describe('API (integration)', () => {
       // with different casing skips the DTO normalization, so only the functional
       // unique index on lower(email) can reject it.
       await expect(
-        prisma.user.create({
-          data: { name: 'Raw Dup', email: 'E2E-USER1@OFFICE.DEV', passwordHash: 'x' },
-        }),
+        db
+          .insert(users)
+          .values({ name: 'Raw Dup', email: 'E2E-USER1@OFFICE.DEV', passwordHash: 'x' }),
       ).rejects.toThrow();
     });
 
@@ -203,10 +205,10 @@ describe('API (integration)', () => {
     beforeAll(async () => {
       // Booking requires a confirmed email; confirm the registered test users
       // directly so the rest of the suite can create bookings.
-      await prisma.user.updateMany({
-        where: { id: { in: [user1.user.id, user2.user.id] } },
-        data: { emailConfirmedAt: new Date() },
-      });
+      await db
+        .update(users)
+        .set({ emailConfirmedAt: new Date() })
+        .where(inArray(users.id, [user1.user.id, user2.user.id]));
     });
 
     it('creates a booking with a title', async () => {
@@ -389,24 +391,22 @@ describe('API (integration)', () => {
     beforeAll(async () => {
       // Two finished bookings for user1; the API refuses past slots by design,
       // so they are inserted directly.
-      await prisma.booking.createMany({
-        data: [
-          {
-            roomId: ROOM_ID,
-            userId: user1.user.id,
-            title: 'Old retro',
-            startsAt: new Date('2024-03-11T08:00:00.000Z'),
-            endsAt: new Date('2024-03-11T09:00:00.000Z'),
-          },
-          {
-            roomId: ROOM_ID,
-            userId: user1.user.id,
-            title: 'Older kickoff',
-            startsAt: new Date('2024-03-04T08:00:00.000Z'),
-            endsAt: new Date('2024-03-04T09:00:00.000Z'),
-          },
-        ],
-      });
+      await db.insert(bookings).values([
+        {
+          roomId: ROOM_ID,
+          userId: user1.user.id,
+          title: 'Old retro',
+          startsAt: new Date('2024-03-11T08:00:00.000Z'),
+          endsAt: new Date('2024-03-11T09:00:00.000Z'),
+        },
+        {
+          roomId: ROOM_ID,
+          userId: user1.user.id,
+          title: 'Older kickoff',
+          startsAt: new Date('2024-03-04T08:00:00.000Z'),
+          endsAt: new Date('2024-03-04T09:00:00.000Z'),
+        },
+      ]);
     });
 
     it('lists upcoming bookings nearest-first with room info', async () => {
@@ -474,9 +474,9 @@ describe('API (integration)', () => {
     let seriesId: string;
 
     beforeAll(async () => {
-      await prisma.room.create({
-        data: { id: RECUR_ROOM_ID, name: 'Recurring Room', floor: 2, capacity: 4 },
-      });
+      await db
+        .insert(rooms)
+        .values({ id: RECUR_ROOM_ID, name: 'Recurring Room', floor: 2, capacity: 4 });
     });
 
     it('creates a weekly series sharing one seriesId, occurrences a week apart', async () => {
@@ -497,9 +497,9 @@ describe('API (integration)', () => {
       expect(body.booking.seriesId).toEqual(expect.any(String));
       seriesId = body.booking.seriesId as string;
 
-      const rows = await prisma.booking.findMany({
-        where: { seriesId },
-        orderBy: { startsAt: 'asc' },
+      const rows = await db.query.bookings.findMany({
+        where: eq(bookings.seriesId, seriesId),
+        orderBy: asc(bookings.startsAt),
       });
       expect(rows).toHaveLength(3);
       expect(rows.every((row) => row.title === 'Weekly QA')).toBe(true);
@@ -539,9 +539,9 @@ describe('API (integration)', () => {
     });
 
     it('cancels this and later occurrences with scope=series', async () => {
-      const rows = await prisma.booking.findMany({
-        where: { seriesId },
-        orderBy: { startsAt: 'asc' },
+      const rows = await db.query.bookings.findMany({
+        where: eq(bookings.seriesId, seriesId),
+        orderBy: asc(bookings.startsAt),
       });
       // Cancel from the middle occurrence: it and the last one go, the first stays.
       await request(app.getHttpServer())
@@ -549,7 +549,9 @@ describe('API (integration)', () => {
         .set('Authorization', `Bearer ${user1.token}`)
         .expect(204);
 
-      const remaining = await prisma.booking.findMany({ where: { seriesId } });
+      const remaining = await db.query.bookings.findMany({
+        where: eq(bookings.seriesId, seriesId),
+      });
       expect(remaining).toHaveLength(1);
       expect(remaining[0].id).toBe(rows[0].id);
     });
@@ -560,12 +562,10 @@ describe('API (integration)', () => {
     const NOTIFY_ROOM_FREE = '99999999-0000-4000-8000-000000000004';
 
     beforeAll(async () => {
-      await prisma.room.createMany({
-        data: [
-          { id: NOTIFY_ROOM_ID, name: 'Notify Room', floor: 1, capacity: 2 },
-          { id: NOTIFY_ROOM_FREE, name: 'Notify Room (free next)', floor: 1, capacity: 2 },
-        ],
-      });
+      await db.insert(rooms).values([
+        { id: NOTIFY_ROOM_ID, name: 'Notify Room', floor: 1, capacity: 2 },
+        { id: NOTIFY_ROOM_FREE, name: 'Notify Room (free next)', floor: 1, capacity: 2 },
+      ]);
     });
 
     it('notifies a booking ending soon whose next slot is taken, exactly once', async () => {
@@ -573,30 +573,29 @@ describe('API (integration)', () => {
       const endsAt = new Date(now.getTime() + 5 * 60_000); // inside the 10-min window
       // Ending-soon booking (inserted directly: the API refuses past starts) plus a
       // back-to-back successor that occupies the room the moment it ends.
-      const booking = await prisma.booking.create({
-        data: {
+      const [booking] = await db
+        .insert(bookings)
+        .values({
           roomId: NOTIFY_ROOM_ID,
           userId: user1.user.id,
           title: 'Ending soon',
           startsAt: new Date(now.getTime() - 25 * 60_000),
           endsAt,
-        },
-      });
-      await prisma.booking.create({
-        data: {
-          roomId: NOTIFY_ROOM_ID,
-          userId: user2.user.id,
-          title: 'Needs the room next',
-          startsAt: endsAt,
-          endsAt: new Date(now.getTime() + 35 * 60_000),
-        },
+        })
+        .returning();
+      await db.insert(bookings).values({
+        roomId: NOTIFY_ROOM_ID,
+        userId: user2.user.id,
+        title: 'Needs the room next',
+        startsAt: endsAt,
+        endsAt: new Date(now.getTime() + 35 * 60_000),
       });
 
       const notifications = app.get(NotificationsService);
       const firstPass = await notifications.processDueNotifications();
       expect(firstPass).toBe(1);
 
-      const after = await prisma.booking.findUnique({ where: { id: booking.id } });
+      const after = await db.query.bookings.findFirst({ where: eq(bookings.id, booking.id) });
       expect(after?.endNotifiedAt).not.toBeNull();
 
       // Idempotent: a second scan does not notify the same booking again.
@@ -606,14 +605,12 @@ describe('API (integration)', () => {
 
     it('does not notify a booking ending soon whose next slot is free', async () => {
       const now = new Date();
-      await prisma.booking.create({
-        data: {
-          roomId: NOTIFY_ROOM_FREE,
-          userId: user2.user.id,
-          title: 'No successor',
-          startsAt: new Date(now.getTime() - 20 * 60_000),
-          endsAt: new Date(now.getTime() + 8 * 60_000),
-        },
+      await db.insert(bookings).values({
+        roomId: NOTIFY_ROOM_FREE,
+        userId: user2.user.id,
+        title: 'No successor',
+        startsAt: new Date(now.getTime() - 20 * 60_000),
+        endsAt: new Date(now.getTime() + 8 * 60_000),
       });
 
       const notifications = app.get(NotificationsService);
@@ -621,14 +618,12 @@ describe('API (integration)', () => {
     });
 
     it('does not notify a booking ending far in the future', async () => {
-      await prisma.booking.create({
-        data: {
-          roomId: NOTIFY_ROOM_ID,
-          userId: user1.user.id,
-          title: 'Later today',
-          startsAt: new Date(Date.now() + 60 * 60_000),
-          endsAt: new Date(Date.now() + 90 * 60_000),
-        },
+      await db.insert(bookings).values({
+        roomId: NOTIFY_ROOM_ID,
+        userId: user1.user.id,
+        title: 'Later today',
+        startsAt: new Date(Date.now() + 60 * 60_000),
+        endsAt: new Date(Date.now() + 90 * 60_000),
       });
 
       const notifications = app.get(NotificationsService);
@@ -689,7 +684,7 @@ describe('API (integration)', () => {
     });
 
     it('confirms via the logged token, reflects it on /auth/me, then allows booking', async () => {
-      const row = await prisma.user.findUnique({ where: { id: unconfirmed.user.id } });
+      const row = await db.query.users.findFirst({ where: eq(users.id, unconfirmed.user.id) });
       expect(row?.emailConfirmToken).toBeTruthy();
 
       const confirmed = await request(app.getHttpServer())

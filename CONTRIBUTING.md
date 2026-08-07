@@ -16,10 +16,10 @@ project **Wiki**).
 ## 🚀 First-time setup
 
 ```bash
-npm install                 # installs deps, generates Prisma client, wires git hooks
+npm install                 # installs deps, wires git hooks
 cp .env.example .env        # defaults work out of the box
 docker compose up -d db     # Postgres (also creates booking_test)
-npm run prisma:migrate      # apply migrations
+npm run db:migrate          # apply migrations
 npm run seed                # rooms + two test users + demo bookings
 npx nx serve backend        # http://localhost:3001/api  (Swagger at /api/docs)
 npx nx serve frontend       # http://localhost:3000

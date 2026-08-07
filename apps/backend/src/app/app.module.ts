@@ -9,10 +9,10 @@ import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { BookingsModule } from './bookings/bookings.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { DatabaseModule } from './db/database.module';
 import { HealthController } from './health/health.controller';
 import { MetricsModule } from './metrics/metrics.module';
 import { NotificationsModule } from './notifications/notifications.module';
-import { PrismaModule } from './prisma/prisma.module';
 import { RoomsModule } from './rooms/rooms.module';
 
 @Module({
@@ -61,7 +61,7 @@ import { RoomsModule } from './rooms/rooms.module';
         },
       }),
     }),
-    PrismaModule,
+    DatabaseModule,
     MetricsModule,
     AuthModule,
     RoomsModule,

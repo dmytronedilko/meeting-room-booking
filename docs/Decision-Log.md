@@ -19,7 +19,7 @@ older ones — superseding is noted inline rather than by deleting history.
 | --- | --- | :---: | --- |
 | [0001](#adr-0001--nx-integrated-monorepo-with-a-shared-contracts-library) | Nx integrated monorepo + shared contracts lib | ✅ | 2026-01 |
 | [0002](#adr-0002--nestjs-on-the-fastify-adapter) | NestJS on the Fastify adapter | ✅ | 2026-01 |
-| [0003](#adr-0003--postgresql--prisma-7-engine-free-pg-adapter) | PostgreSQL + Prisma 7 (engine-free) | ✅ | 2026-01 |
+| [0003](#adr-0003--postgresql--prisma-7-engine-free-pg-adapter) | PostgreSQL + Prisma 7 (engine-free) | 🔄 | 2026-01 |
 | [0004](#adr-0004--prevent-double-booking-with-a-database-exclude-constraint) | No-overlap via DB `EXCLUDE` constraint | ✅ | 2026-01 |
 | [0005](#adr-0005--store-utc-validate-in-office-time-render-in-the-viewers-zone) | UTC storage / office-time rules / viewer-time render | ✅ | 2026-01 |
 | [0006](#adr-0006--weekly-recurring-bookings-as-a-materialized-series) | Recurring bookings as a materialized series | ✅ | 2026-07 |
@@ -36,8 +36,10 @@ older ones — superseding is noted inline rather than by deleting history.
 | [0017](#adr-0017--protect-main-gate-merges-on-all-ci-checks) | Protect `main`; gate merges on CI | ✅ | 2026-08-02 |
 | [0018](#adr-0018--trunk-based-flow-with-a-develop-mirror) | Trunk-based flow, `develop` mirror | ✅ | 2026-08-02 |
 | [0019](#adr-0019--docs-in-docs-mirrored-to-the-github-wiki) | `/docs` mirrored to the GitHub Wiki | ✅ | 2026-08-02 |
-| [0020](#adr-0020--traefik-replaces-nginx-as-the-single-entry-point) | Traefik replaces Nginx as the edge | ✅ | 2026-08-02 |
+| [0020](#adr-0020--traefik-replaces-nginx-as-the-single-entry-point) | Traefik replaces Nginx as the edge | 🔄 | 2026-08-02 |
 | [0021](#adr-0021--build-after-source-analysis-ci-stage-reorder) | Build after source analysis (CI reorder) | ✅ | 2026-08-03 |
+| [0022](#adr-0022--migrate-from-prisma-7-to-drizzle-orm) | Migrate from Prisma 7 to Drizzle ORM | ✅ | 2026-08-07 |
+| [0023](#adr-0023--nginx-replaces-traefik-as-the-single-entry-point) | Nginx replaces Traefik as the edge | ✅ | 2026-08-07 |
 
 ---
 
@@ -72,7 +74,7 @@ patterns (low-cardinality metric labels). Cost: a few Express-only libs don't
 apply.
 
 ### ADR-0003 · PostgreSQL + Prisma 7 (engine-free, pg adapter)
-**Status:** ✅ Accepted · **Date:** 2026-01
+**Status:** 🔄 The ORM choice is superseded by [ADR-0022](#adr-0022--migrate-from-prisma-7-to-drizzle-orm) (the PostgreSQL 16 choice stands) · **Date:** 2026-01
 
 **Context.** Relational data (users, rooms, bookings) with strong constraints
 and range queries.
@@ -351,7 +353,7 @@ image appears a little later, because the build now waits for the quality gate.
 ## Networking & edge
 
 ### ADR-0020 · Traefik replaces Nginx as the single entry point
-**Status:** ✅ Accepted · **Date:** 2026-08-02 · **Supersedes** [ADR-0010](#adr-0010--nginx-as-the-single-entry-point)
+**Status:** 🔄 Superseded by [ADR-0023](#adr-0023--nginx-replaces-traefik-as-the-single-entry-point) · **Date:** 2026-08-02 · **Supersedes** [ADR-0010](#adr-0010--nginx-as-the-single-entry-point)
 
 **Context.** ADR-0010 put **Nginx** on `:80` as the one published app port, with
 routes hand-maintained in `nginx.conf`. That works, but the upstream list is
@@ -376,6 +378,72 @@ but hands the edge container root-equivalent host access).
 and a TLS path come for free. Cost: two extra containers (Traefik + socket-proxy)
 and a Traefik-specific mental model. The socket-proxy is the only container that
 touches the Docker socket, and it does so read-only on an isolated network.
+
+### ADR-0022 · Migrate from Prisma 7 to Drizzle ORM
+**Status:** ✅ Accepted · **Date:** 2026-08-07
+**Supersedes the ORM half of** [ADR-0003](#adr-0003--postgresql--prisma-7-engine-free-pg-adapter).
+
+**Context.** The data layer was Prisma 7 (engine-free, `pg` driver adapter). Prisma
+still ships a generated client (a `postinstall` / Docker-build `prisma generate`
+step) and, at runtime in the container, needed the `prisma` CLI installed purely to
+run `migrate deploy` on start-up — extra tooling and image weight for a small
+three-table schema.
+**Decision.** Replace Prisma with **Drizzle ORM** over the **`drizzle-orm/node-postgres`**
+driver (a `pg` `Pool`). The schema is `apps/backend/src/db/schema.ts`; a `DatabaseModule`
+exposes one pooled Drizzle client through a `DRIZZLE` injection token. Reads use
+Drizzle's **relational query API** (`db.query.*` with `with`), the closest analogue
+to Prisma's `include`. Migrations are `drizzle-kit`-generated SQL under
+`apps/backend/drizzle/`; the `btree_gist` EXCLUDE constraint ([ADR-0004](#adr-0004--prevent-double-booking-with-a-database-exclude-constraint))
+stays a hand-written **custom** migration (Drizzle can't model EXCLUDE), while the
+`lower(email)` functional unique index — which Prisma couldn't model and needed raw
+SQL — now lives in the schema. A small bundled programmatic migrator
+(`src/db/migrate.ts`) applies migrations at container start, so the runtime image
+ships **no** migration CLI (and drops the `openssl`/engine baggage).
+**Alternatives.** Keep Prisma (works, but the generated client + runtime CLI are
+overhead at this size); Drizzle **core** select/join API (more explicit SQL, but
+more churn versus Prisma's `include`, so relational queries were chosen); TypeORM
+(heavier, decorator-based, weaker inference).
+**Consequences.** No client-generation step; a lighter, CLI-free runtime image;
+a plain-TypeScript schema; the `lower(email)` guarantee moves from raw SQL into the
+schema. Driver errors are now raw `pg` `DatabaseError`s (SQLSTATE), which Drizzle
+wraps in a `DrizzleQueryError` — error handling walks the `cause` chain for
+`23505`/`23P01` rather than reading Prisma error codes. Because the migrations were
+regenerated fresh, a database previously Prisma-migrated (e.g. a local dev volume)
+must be reset once (`docker compose down -v`); CI and the integration suite always
+start from an empty database, so they are unaffected.
+
+### ADR-0023 · Nginx replaces Traefik as the single entry point
+**Status:** ✅ Accepted · **Date:** 2026-08-07 · **Supersedes** [ADR-0020](#adr-0020--traefik-replaces-nginx-as-the-single-entry-point)
+
+**Context.** ADR-0020 moved the edge from a hand-written Nginx config to Traefik v3,
+trading a static upstream list for Docker-label routing, a native metrics feed, and
+a templated ACME path. That convenience cost **two extra containers** — Traefik plus
+a `tecnativa/docker-socket-proxy` sidecar — and put routing behind a Traefik-specific
+model (labels, router priority, static + dynamic config files). For a fixed two-route
+topology (`/api` + a catch-all) that changes ~never, the dynamic service-discovery
+machinery earns little, and exposing the Docker API to the edge — even read-only, even
+on an isolated network — is attack surface we'd rather not run.
+**Decision.** Return the edge to **Nginx** (`infra/nginx/nginx.conf`) on `:80`, as in
+[ADR-0010](#adr-0010--nginx-as-the-single-entry-point): `/api/*` → backend (prefix
+kept, matching the Nest global prefix), everything else → the frontend, both routes
+declared directly in the file. Traefik's `secure-headers` middleware is ported to
+`add_header` directives (`X-Content-Type-Options`, `X-Frame-Options`,
+`Referrer-Policy`), so the header posture is unchanged. The socket-proxy sidecar, its
+`internal` network, and the ACME volume are removed. The external contract is
+identical: same `:80`, same two routes, same-origin cookie, and `GET /health` +
+`/metrics` still bypass the proxy.
+**Alternatives.** Keep Traefik (dynamic discovery + native metrics + templated TLS,
+but two containers and Docker-socket exposure for a topology that never changes — the
+ADR-0020 choice, not worth its cost here); Caddy (auto-TLS, but another runtime we
+don't otherwise use).
+**Consequences.** Two fewer containers and no Docker socket anywhere in the stack;
+routing is one readable file again. Cost: adding a routed service is a config edit,
+not a label (fine at this size), and the edge loses its native Prometheus feed — so
+the Traefik Grafana dashboard and its scrape job are dropped (backend `/metrics` and
+the app dashboard are untouched). TLS returns to a hand-rolled concern: Nginx has no
+built-in ACME, so a real deployment terminates TLS with a mounted cert or a certbot
+sidecar. Net: the ADR-0010 posture, with the header hardening from the Traefik era
+kept.
 
 ---
 

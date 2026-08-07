@@ -16,8 +16,8 @@ in the database.
 | Monorepo | Nx (integrated), TypeScript `strict` everywhere, no `any` |
 | Frontend | Next.js 16 (App Router), React 19, Tailwind CSS, shadcn/ui, lucide-react, sonner, next-themes, TanStack Query |
 | Backend | NestJS 11 (Fastify adapter), class-validator DTOs, Swagger, JWT auth, @nestjs/throttler |
-| Database | PostgreSQL 16 + Prisma (SQL migrations, `btree_gist` EXCLUDE constraint) |
-| Proxy | Traefik — the single entry point (`:80`) |
+| Database | PostgreSQL 16 + Drizzle ORM (SQL migrations, `btree_gist` EXCLUDE constraint) |
+| Proxy | Nginx — the single entry point (`:80`) |
 | Monitoring | Prometheus + Grafana (pre-provisioned dashboard), prom-client via @willsoto/nestjs-prometheus |
 | Logging | Structured JSON logs via nestjs-pino → ELK: Filebeat → Elasticsearch → Kibana (auto-provisioned data view) |
 | Tests | Vitest (+ SWC for Nest decorators), supertest integration tests |
@@ -27,12 +27,12 @@ in the database.
 
 ```
 apps/
-  backend/         NestJS REST API (+ prisma schema, migrations, seed, Dockerfile)
+  backend/         NestJS REST API (+ Drizzle schema, migrations, seed, Dockerfile)
   frontend/        Next.js app (App Router, shadcn/ui, Dockerfile)
 libs/
   shared/          Shared types, API DTO contracts and domain constants
 infra/
-  traefik/         Reverse-proxy config (single entry point)
+  nginx/           Reverse-proxy config (single entry point)
   prometheus/      Scrape config
   grafana/         Datasource + dashboard provisioning, dashboard JSON
   elk/             Filebeat config + Kibana data-view provisioning script
@@ -50,8 +50,7 @@ flowchart LR
     Browser(["Browser"])
 
     subgraph net["Docker Compose network"]
-        Proxy["Traefik proxy<br/>:80 — single entry point"]
-        SP["socket-proxy<br/>read-only Docker API"]
+        Proxy["Nginx proxy<br/>:80 — single entry point"]
         FE["frontend<br/>Next.js standalone :3000"]
         BE["backend<br/>NestJS :3001"]
         DB[("PostgreSQL 16<br/>booking / booking_test")]
@@ -65,10 +64,8 @@ flowchart LR
     Browser -- "http://localhost" --> Proxy
     Proxy -- "/api/*" --> BE
     Proxy -- "everything else" --> FE
-    BE -- "Prisma" --> DB
+    BE -- "Drizzle / pg" --> DB
     Prom -- "scrape backend:3001/metrics (10s)" --> BE
-    Prom -- "scrape traefik:8082/metrics (10s)" --> Proxy
-    Proxy -. "discovers routes (ro)" .-> SP
     Graf -- "PromQL" --> Prom
     BE -- "pino JSON → stdout" --> FB
     FB -- "parsed events" --> ES
@@ -80,18 +77,17 @@ flowchart LR
 
 The backend and frontend ports are **not** published to the host — all
 application traffic goes through the proxy. Prometheus and Grafana publish
-their own ports directly, bypassing Traefik. `GET /health` and `GET /metrics`
+their own ports directly, bypassing Nginx. `GET /health` and `GET /metrics`
 are served without the `/api` prefix and without JWT.
 
 Startup order is enforced by health-gated `depends_on`:
 
 ```mermaid
 flowchart LR
-    db["db (healthy)"] --> backend["backend<br/>migrate deploy → seed → listen"]
+    db["db (healthy)"] --> backend["backend<br/>migrate → seed → listen"]
     backend -- "healthy" --> frontend
-    backend -- "healthy" --> traefik
-    frontend -- "started" --> traefik
-    socketProxy["socket-proxy"] -- "started" --> traefik
+    backend -- "healthy" --> nginx
+    frontend -- "started" --> nginx
     prometheus --> grafana
     elasticsearch -- "healthy" --> kibana
     elasticsearch -- "healthy" --> filebeat
@@ -108,7 +104,7 @@ docker compose up --build
 
 That's it. On a fresh clone this brings up:
 
-- **App:** http://localhost (via Traefik)
+- **App:** http://localhost (via Nginx)
 - **Swagger:** http://localhost/api/docs
 - **Prometheus:** http://localhost:9090
 - **Grafana:** http://localhost:3002 — login `admin` / `admin`, the
@@ -118,25 +114,25 @@ That's it. On a fresh clone this brings up:
 - **Kibana (logs):** http://localhost:5601 — no login; open **Discover**, the
   **"Application logs"** data view (`filebeat-*`) is pre-provisioned and set
   as default. Backend pino logs arrive parsed (`req.url`, `res.statusCode`,
-  `responseTime`, `msg`, ...); traefik/postgres/etc. logs arrive as plain
+  `responseTime`, `msg`, ...); nginx/postgres/etc. logs arrive as plain
   messages. Elasticsearch itself is at http://localhost:9200.
 
-The backend container applies Prisma migrations (`migrate deploy`) and the
-idempotent demo seed on every start.
+The backend container applies the Drizzle migrations and the idempotent demo
+seed on every start.
 
 ### 2. Dev mode (hot reload)
 
 ```bash
-npm install                 # install deps (postinstall generates the Prisma client)
+npm install                 # install deps
 cp .env.example .env        # defaults work out of the box
 docker compose up -d db     # Postgres only (also creates booking_test)
-npm run prisma:migrate      # apply migrations to the dev database
+npm run db:migrate          # apply migrations to the dev database
 npm run seed                # rooms, two test users and demo bookings
 npx nx serve backend        # http://localhost:3001/api, Swagger at /api/docs
 npx nx serve frontend       # http://localhost:3000
 ```
 
-(The Docker path in §1 does `migrate deploy` + seed automatically on backend
+(The Docker path in §1 applies migrations + seed automatically on backend
 start; in dev mode you run them once yourself, as above.)
 
 In dev mode the frontend talks directly to `http://localhost:3001/api`
@@ -158,7 +154,7 @@ automatically by `infra/db/init-test-db.sql`) and apply migrations before the
 suite. The Playwright e2e suite (`e2e/`, config in `playwright.config.ts`) drives
 the real app in a browser and expects the full stack reachable at `E2E_BASE_URL`
 (default `http://localhost`); bring it up with
-`docker compose up -d --wait db backend frontend traefik`.
+`docker compose up -d --wait db backend frontend nginx`.
 
 ### Git hooks (local, fast)
 
@@ -197,7 +193,7 @@ commit is still caught.
    Stage-3 backend image and scans its OS / base-image layers; `test:integration`
    runs against a Postgres service.
 5. **E2E** — **pulls** the pre-built images from GHCR (no rebuild), boots the Docker
-   stack (`db`, `backend`, `frontend`, `traefik`) and runs Playwright; the HTML report
+   stack (`db`, `backend`, `frontend`, `nginx`) and runs Playwright; the HTML report
    is uploaded as an artifact.
 
 The image is built once (Stage 3) and reused by the container scan and E2E, so no
@@ -323,7 +319,7 @@ book immediately. The link base is `APP_URL` (see `.env.example`).
   (data view `filebeat-*`, provisioned automatically by the one-shot
   `kibana-init` service) is the log UI. Example Kibana queries:
   `res.statusCode >= 400`, `msg : "request completed" and responseTime > 100`,
-  `container.labels.com_docker_compose_service : "traefik"`.
+  `container.labels.com_docker_compose_service : "nginx"`.
 
 ## Decisions made (not dictated by the spec)
 
@@ -337,7 +333,7 @@ book immediately. The link base is `APP_URL` (see `.env.example`).
    redirects to `/login`. Set `COOKIE_SECURE=true` when serving over TLS.
 2. **Server-side route protection via Next.js middleware.** The session
    cookie is visible to the Next server (same host in dev, same origin behind
-   Traefik in Docker), so `src/middleware.ts` redirects anonymous requests to
+   the Nginx proxy in Docker), so `src/middleware.ts` redirects anonymous requests to
    `/login` — and logged-in visits to `/login`/`/register` back to `/` —
    before any protected page renders; no client-side guard, no skeleton flash.
    The middleware checks cookie presence and the JWT `exp` claim only;
@@ -367,7 +363,7 @@ book immediately. The link base is `APP_URL` (see `.env.example`).
     with a duration select capped by the next booking, the end of the working
     day and the 4-hour limit.
 11. **Grafana/Prometheus ports (3002/9090) are published directly**, bypassing
-    Traefik, to avoid Grafana sub-path configuration (as allowed by the spec).
+    Nginx, to avoid Grafana sub-path configuration (as allowed by the spec).
 12. **Fastify adapter** (`@nestjs/platform-fastify`) instead of the default
     Express one: same Nest pipeline (guards/pipes/interceptors/filters are
     adapter-agnostic), `trustProxy` is set on the `FastifyAdapter`, Swagger UI

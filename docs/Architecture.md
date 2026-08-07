@@ -20,7 +20,7 @@ decisions worth knowing before you change anything.
 
 ## 🗺️ System topology
 
-Everything runs as a single Docker Compose project. **Traefik is the only entry
+Everything runs as a single Docker Compose project. **Nginx is the only entry
 point** (`:80`); the frontend and backend ports are **not** published to the
 host — all application traffic goes through the proxy. Prometheus, Grafana, and
 Kibana publish their own ports directly for local tooling.
@@ -30,8 +30,7 @@ flowchart LR
     Browser(["Browser"])
 
     subgraph net["Docker Compose network"]
-        Proxy["Traefik proxy<br/>:80 — single entry point"]
-        SP["socket-proxy<br/>read-only Docker API"]
+        Proxy["Nginx proxy<br/>:80 — single entry point"]
         FE["frontend<br/>Next.js standalone :3000"]
         BE["backend<br/>NestJS :3001"]
         DB[("PostgreSQL 16<br/>booking / booking_test")]
@@ -45,10 +44,8 @@ flowchart LR
     Browser -- "http://localhost" --> Proxy
     Proxy -- "/api/*" --> BE
     Proxy -- "everything else" --> FE
-    BE -- "Prisma / pg adapter" --> DB
+    BE -- "Drizzle / pg (node-postgres)" --> DB
     Prom -- "scrape backend:3001/metrics (10s)" --> BE
-    Prom -- "scrape traefik:8082/metrics (10s)" --> Proxy
-    Proxy -. "discovers routes (ro)" .-> SP
     Graf -- "PromQL" --> Prom
     BE -- "pino JSON → stdout" --> FB
     FB -- "parsed events" --> ES
@@ -68,11 +65,10 @@ dependency that isn't ready:
 
 ```mermaid
 flowchart LR
-    db["db (healthy)"] --> backend["backend<br/>migrate deploy → seed → listen"]
+    db["db (healthy)"] --> backend["backend<br/>migrate → seed → listen"]
     backend -- "healthy" --> frontend
-    backend -- "healthy" --> traefik
-    frontend -- "started" --> traefik
-    socketProxy["socket-proxy"] -- "started" --> traefik
+    backend -- "healthy" --> nginx
+    frontend -- "started" --> nginx
     prometheus --> grafana
     elasticsearch -- "healthy" --> kibana
     elasticsearch -- "healthy" --> filebeat
@@ -87,11 +83,11 @@ A typical authenticated write — creating a booking — from click to persisten
 sequenceDiagram
     autonumber
     participant B as Browser (TanStack Query)
-    participant T as Traefik :80
+    participant T as Nginx :80
     participant G as JwtAuthGuard (global)
     participant C as BookingsController
     participant S as BookingsService
-    participant P as Prisma (pg adapter)
+    participant P as Drizzle (node-postgres)
     participant D as PostgreSQL
 
     B->>T: POST /api/bookings  (session cookie)
@@ -119,12 +115,12 @@ Nx **integrated** monorepo. TypeScript is `strict` everywhere; `any` is banned.
 
 ```
 apps/
-  backend/     NestJS REST API (+ prisma schema, migrations, seed, Dockerfile)
+  backend/     NestJS REST API (+ Drizzle schema, migrations, seed, Dockerfile)
   frontend/    Next.js app (App Router, shadcn/ui, Dockerfile)
 libs/
   shared/      Shared types, API DTO contracts, and domain constants
 infra/
-  traefik/     Reverse-proxy config (single entry point)
+  nginx/       Reverse-proxy config (single entry point)
   prometheus/  Scrape config
   grafana/     Datasource + dashboard provisioning, dashboard JSON
   elk/         Filebeat config + Kibana data-view provisioning
@@ -162,12 +158,12 @@ flowchart TB
     App --> Bookings[BookingsModule<br/>create / list mine / cancel]
     App --> Notif[NotificationsModule<br/>background 'ends soon' scanner]
     App --> Metrics[MetricsModule<br/>/metrics + counters]
-    App --> Prisma[PrismaModule<br/>pg adapter, one client]
-    Auth --> Prisma
-    Rooms --> Prisma
-    Bookings --> Prisma
+    App --> DBM[DatabaseModule<br/>Drizzle over pg, one pool]
+    Auth --> DBM
+    Rooms --> DBM
+    Bookings --> DBM
     Bookings --> Metrics
-    Notif --> Prisma
+    Notif --> DBM
     Notif --> Metrics
 ```
 
@@ -176,9 +172,10 @@ flowchart TB
   It's pure and unit-tested (`booking-rules.spec.ts`).
 - **`time/office-time.ts`** + `libs/shared` constants centralize the
   Europe/Kyiv ↔ UTC conversions (see [Time-zone model](#-time-zone-model)).
-- **`prisma/prisma.service.ts`** owns a single Prisma client built on the `pg`
-  driver adapter (Prisma 7 is engine-free — the connection is supplied at
-  runtime, not from the schema).
+- **`db/database.module.ts`** provides a single Drizzle client over a `pg`
+  (node-postgres) connection pool via the `DRIZZLE` injection token, and owns the
+  pool's lifecycle. Drizzle needs no query-engine binary or generated client;
+  the schema lives in `db/schema.ts`.
 
 ## 🖥️ Frontend architecture
 
@@ -285,16 +282,17 @@ EXCLUDE USING gist (
 | `@@index([userId, startsAt])` | "My bookings" listing |
 | `@@index([seriesId])` | Series cancellation (`scope=series`) |
 | `@@index([endNotifiedAt, endsAt])` | The notification scanner's hot query |
-| functional unique on `lower(email)` | Case-insensitive email uniqueness (raw-SQL migration) |
+| functional unique on `lower(email)` | Case-insensitive email uniqueness (functional unique index in the schema) |
 | `onDelete: Cascade` on `roomId`/`userId` | Bookings vanish with their room/user |
 
 ### Migrations
 
-Timestamp-ordered under `apps/backend/prisma/migrations/` — `init`,
-`booking_no_overlap` (the EXCLUDE constraint), `room_floor_booking_title`,
-`recurring_and_notifications`, `email_confirmation`,
-`email_case_insensitive_unique`. Applied with `migrate deploy` (Docker: on every
-backend start; dev: `npm run prisma:migrate`).
+Drizzle-generated SQL under `apps/backend/drizzle/` (with a `meta/` journal):
+`0000_init` (all tables, indexes and FKs from `db/schema.ts`, including the
+`lower(email)` functional unique index) and `0001_booking_no_overlap`, a
+hand-written custom migration for the `btree_gist` EXCLUDE constraint (which
+Drizzle's schema can't express). Applied with the Drizzle migrator (Docker: on
+every backend start; dev: `npm run db:migrate`).
 
 ## 🕒 Time-zone model
 

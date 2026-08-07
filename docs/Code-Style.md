@@ -47,8 +47,8 @@ Enforced by Biome — never hand-format:
 | Trailing commas | **all** |
 | Semicolons | yes (Biome default) |
 
-`*.css`, `apps/backend/prisma/migrations`, `infra/grafana/dashboards`, and the
-usual build outputs (`dist`, `.next`, `coverage`, `.nx`) are excluded from
+`*.css`, `apps/backend/drizzle` (generated SQL migrations), `infra/grafana/dashboards`,
+and the usual build outputs (`dist`, `.next`, `coverage`, `.nx`) are excluded from
 formatting.
 
 ## 🔒 Linting & TypeScript
@@ -81,8 +81,8 @@ clutter. The bar for a comment is simple:
 
 ```ts
 // ✅ Good — captures a non-obvious reason
-// Prisma 7 is engine-free: the connection is supplied by the pg driver adapter
-// at runtime, so the URL no longer lives in the schema.
+// timestamptz columns use mode:'date' so the app layer keeps receiving JS Date
+// objects (mappers call .toISOString(); services compare with new Date()).
 
 // ✅ Good — documents a boundary decision
 // Ranges are half-open, so touching bookings (10:00–10:30 / 10:30–11:00) don't overlap.

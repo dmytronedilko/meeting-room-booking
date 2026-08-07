@@ -22,7 +22,7 @@ REST API for the Meeting Room Booking backend (NestJS 11, Fastify).
 
 | | |
 | --- | --- |
-| **Base URL (Docker)** | `http://localhost/api` (via Traefik) |
+| **Base URL (Docker)** | `http://localhost/api` (via Nginx) |
 | **Base URL (dev)** | `http://localhost:3001/api` |
 | **Global prefix** | `/api` — **except** `GET /health` and `GET /metrics` |
 | **Content type** | `application/json` (request & response) |

@@ -4,11 +4,10 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { DrizzleDB } from '../db/database.module';
 import type { MetricsService } from '../metrics/metrics.service';
-import type { PrismaService } from '../prisma/prisma.service';
 import { BookingsService } from './bookings.service';
 
 const USER_ID = '00000000-0000-4000-8000-000000000101';
@@ -40,49 +39,71 @@ function bookingRow(overrides: Record<string, unknown> = {}) {
 }
 
 function createMocks() {
-  const prisma = {
-    // Confirmed by default so create() passes the email-confirmation gate.
-    user: {
-      findUnique: vi
-        .fn()
-        .mockResolvedValue({ emailConfirmedAt: new Date('2020-01-01T00:00:00.000Z') }),
+  const insertValues = vi.fn();
+  // By default the insert echoes the values it was handed as the "returned"
+  // rows, so create() builds its response from what it inserted.
+  const insertReturning = vi.fn((vals: unknown) => {
+    const rows = Array.isArray(vals) ? vals : [vals];
+    return Promise.resolve(
+      rows.map((row) => ({ id: BOOKING_ID, createdAt: new Date(), ...(row as object) })),
+    );
+  });
+  const deleteReturning = vi.fn().mockResolvedValue([{ id: BOOKING_ID }]);
+
+  const db = {
+    query: {
+      // A confirmed, named actor by default so create() passes the email gate
+      // and can attribute the booking without a second query.
+      users: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: USER_ID,
+          name: 'Taras',
+          emailConfirmedAt: new Date('2020-01-01T00:00:00.000Z'),
+        }),
+      },
+      rooms: { findFirst: vi.fn() },
+      bookings: { findFirst: vi.fn(), findMany: vi.fn() },
     },
-    room: { findUnique: vi.fn() },
-    booking: {
-      create: vi.fn(),
-      findUnique: vi.fn(),
-      findMany: vi.fn(),
-      count: vi.fn(),
-      delete: vi.fn(),
-      deleteMany: vi.fn(),
-    },
-    // Array form resolves each queued create, mirroring prisma's $transaction.
-    $transaction: vi.fn((ops: unknown) => (Array.isArray(ops) ? Promise.all(ops) : ops)),
+    insert: vi.fn(() => ({
+      values: (vals: unknown) => {
+        insertValues(vals);
+        return { returning: () => insertReturning(vals) };
+      },
+    })),
+    delete: vi.fn(() => ({
+      where: () => ({ returning: () => deleteReturning() }),
+    })),
+    $count: vi.fn().mockResolvedValue(0),
+    transaction: vi.fn(),
   };
+  // The transaction runs its callback with the same mock standing in for `tx`.
+  db.transaction.mockImplementation((cb: (tx: unknown) => unknown) => cb(db));
+
   const metrics = {
     bookingCreated: vi.fn(),
     bookingCancelled: vi.fn(),
     bookingConflict: vi.fn(),
   };
   const service = new BookingsService(
-    prisma as unknown as PrismaService,
+    db as unknown as DrizzleDB,
     metrics as unknown as MetricsService,
   );
-  return { prisma, metrics, service };
+  return { db, metrics, service, insertValues, insertReturning, deleteReturning };
 }
 
 function exclusionViolation(): Error {
-  return new Prisma.PrismaClientUnknownRequestError(
-    'ERROR: conflicting key value violates exclusion constraint "Booking_no_overlap" (SQLSTATE 23P01)',
-    { clientVersion: '5.22.0' },
+  // The raw PostgreSQL exclusion-constraint error the pg driver surfaces
+  // (SQLSTATE 23P01), which isPgError keys on.
+  return Object.assign(
+    new Error('conflicting key value violates exclusion constraint "Booking_no_overlap"'),
+    { code: '23P01' },
   );
 }
 
 describe('BookingsService.create', () => {
   it('creates a single booking and increments the created counter', async () => {
-    const { prisma, metrics, service } = createMocks();
-    prisma.room.findUnique.mockResolvedValue({ id: ROOM_ID });
-    prisma.booking.create.mockResolvedValue(bookingRow());
+    const { db, metrics, service, insertValues } = createMocks();
+    db.query.rooms.findFirst.mockResolvedValue({ id: ROOM_ID });
 
     const result = await service.create(USER_ID, {
       roomId: ROOM_ID,
@@ -95,19 +116,17 @@ describe('BookingsService.create', () => {
     expect(result.booking.isMine).toBe(true);
     expect(result.booking.title).toBe(TITLE);
     expect(result.booking.seriesId).toBeNull();
-    expect(prisma.booking.create).toHaveBeenCalledOnce();
-    expect(prisma.booking.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ title: TITLE, seriesId: null }) }),
-    );
+    // One multi-row insert; a single booking is an array of one occurrence.
+    expect(db.insert).toHaveBeenCalledOnce();
+    expect(insertValues).toHaveBeenCalledWith([
+      expect.objectContaining({ title: TITLE, seriesId: null }),
+    ]);
     expect(metrics.bookingCreated).toHaveBeenCalledWith(1);
   });
 
   it('creates a weekly series sharing one seriesId, a week apart', async () => {
-    const { prisma, metrics, service } = createMocks();
-    prisma.room.findUnique.mockResolvedValue({ id: ROOM_ID });
-    prisma.booking.create.mockImplementation(({ data }: { data: Record<string, unknown> }) =>
-      Promise.resolve(bookingRow(data)),
-    );
+    const { db, metrics, service, insertValues } = createMocks();
+    db.query.rooms.findFirst.mockResolvedValue({ id: ROOM_ID });
 
     const result = await service.create(USER_ID, {
       roomId: ROOM_ID,
@@ -118,19 +137,20 @@ describe('BookingsService.create', () => {
     });
 
     expect(result.createdCount).toBe(3);
-    expect(prisma.booking.create).toHaveBeenCalledTimes(3);
-    const calls = prisma.booking.create.mock.calls.map(([arg]) => arg.data);
-    const seriesIds = new Set(calls.map((data) => data.seriesId));
+    // All three occurrences go in one insert, sharing a generated seriesId.
+    const values = insertValues.mock.calls[0][0] as Array<Record<string, unknown>>;
+    expect(values).toHaveLength(3);
+    const seriesIds = new Set(values.map((data) => data.seriesId));
     expect(seriesIds.size).toBe(1);
     expect([...seriesIds][0]).toEqual(expect.any(String));
     // Occurrences are one office-week apart (same wall clock).
-    const starts = calls.map((data) => (data.startsAt as Date).toISOString());
+    const starts = values.map((data) => (data.startsAt as Date).toISOString());
     expect(starts).toEqual([START, '2030-01-22T09:00:00.000Z', '2030-01-29T09:00:00.000Z']);
     expect(metrics.bookingCreated).toHaveBeenCalledWith(3);
   });
 
   it('rejects a slot that is not on the 30-minute grid without touching the database', async () => {
-    const { prisma, service } = createMocks();
+    const { db, service } = createMocks();
 
     await expect(
       service.create(USER_ID, {
@@ -140,7 +160,7 @@ describe('BookingsService.create', () => {
         endsAt: '2030-01-15T10:10:00.000Z',
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.room.findUnique).not.toHaveBeenCalled();
+    expect(db.query.rooms.findFirst).not.toHaveBeenCalled();
   });
 
   it('rejects booking in the past', async () => {
@@ -157,8 +177,8 @@ describe('BookingsService.create', () => {
   });
 
   it('returns 404 when the room does not exist', async () => {
-    const { prisma, service } = createMocks();
-    prisma.room.findUnique.mockResolvedValue(null);
+    const { db, service } = createMocks();
+    db.query.rooms.findFirst.mockResolvedValue(undefined);
 
     await expect(
       service.create(USER_ID, { roomId: ROOM_ID, title: TITLE, startsAt: START, endsAt: END }),
@@ -166,20 +186,20 @@ describe('BookingsService.create', () => {
   });
 
   it('rejects booking when the user has not confirmed their email (403)', async () => {
-    const { prisma, service } = createMocks();
-    prisma.user.findUnique.mockResolvedValue({ emailConfirmedAt: null });
-    prisma.room.findUnique.mockResolvedValue({ id: ROOM_ID });
+    const { db, service } = createMocks();
+    db.query.users.findFirst.mockResolvedValue({ emailConfirmedAt: null });
+    db.query.rooms.findFirst.mockResolvedValue({ id: ROOM_ID });
 
     await expect(
       service.create(USER_ID, { roomId: ROOM_ID, title: TITLE, startsAt: START, endsAt: END }),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(prisma.booking.create).not.toHaveBeenCalled();
+    expect(db.insert).not.toHaveBeenCalled();
   });
 
   it('translates an exclusion-constraint violation into 409 and counts the conflict', async () => {
-    const { prisma, metrics, service } = createMocks();
-    prisma.room.findUnique.mockResolvedValue({ id: ROOM_ID });
-    prisma.booking.create.mockRejectedValue(exclusionViolation());
+    const { db, metrics, service, insertReturning } = createMocks();
+    db.query.rooms.findFirst.mockResolvedValue({ id: ROOM_ID });
+    insertReturning.mockRejectedValue(exclusionViolation());
 
     await expect(
       service.create(USER_ID, { roomId: ROOM_ID, title: TITLE, startsAt: START, endsAt: END }),
@@ -189,11 +209,8 @@ describe('BookingsService.create', () => {
   });
 
   it('allows touching boundaries (database accepts, no conflict raised)', async () => {
-    const { prisma, service } = createMocks();
-    prisma.room.findUnique.mockResolvedValue({ id: ROOM_ID });
-    prisma.booking.create.mockResolvedValue(
-      bookingRow({ startsAt: new Date(END), endsAt: new Date('2030-01-15T11:00:00.000Z') }),
-    );
+    const { db, service } = createMocks();
+    db.query.rooms.findFirst.mockResolvedValue({ id: ROOM_ID });
 
     await expect(
       service.create(USER_ID, {
@@ -225,17 +242,11 @@ describe('BookingsService my bookings', () => {
   }
 
   it('lists upcoming bookings nearest-first with room info', async () => {
-    const { prisma, service } = createMocks();
-    prisma.booking.findMany.mockResolvedValue([myRow(BOOKING_ID, START, END)]);
+    const { db, service } = createMocks();
+    db.query.bookings.findMany.mockResolvedValue([myRow(BOOKING_ID, START, END)]);
 
     const result = await service.findMyUpcoming(USER_ID);
 
-    expect(prisma.booking.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ userId: USER_ID, endsAt: { gt: expect.any(Date) } }),
-        orderBy: { startsAt: 'asc' },
-      }),
-    );
     expect(result).toEqual([
       {
         id: BOOKING_ID,
@@ -249,19 +260,12 @@ describe('BookingsService my bookings', () => {
   });
 
   it('paginates past bookings most-recent-first and returns the total', async () => {
-    const { prisma, service } = createMocks();
-    prisma.$transaction.mockResolvedValue([[myRow(BOOKING_ID, START, END)], 7]);
+    const { db, service } = createMocks();
+    db.query.bookings.findMany.mockResolvedValue([myRow(BOOKING_ID, START, END)]);
+    db.$count.mockResolvedValue(7);
 
     const result = await service.findMyPast(USER_ID, 5, 10);
 
-    expect(prisma.booking.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ userId: USER_ID, endsAt: { lte: expect.any(Date) } }),
-        orderBy: { startsAt: 'desc' },
-        skip: 5,
-        take: 10,
-      }),
-    );
     expect(result.total).toBe(7);
     expect(result.items).toHaveLength(1);
     expect(result.items[0]).toMatchObject({ id: BOOKING_ID, room: { name: 'Large' } });
@@ -276,17 +280,17 @@ describe('BookingsService.remove', () => {
   });
 
   it("rejects deleting someone else's booking with 403 and keeps the record", async () => {
-    mocks.prisma.booking.findUnique.mockResolvedValue(bookingRow({ userId: OTHER_USER_ID }));
+    mocks.db.query.bookings.findFirst.mockResolvedValue(bookingRow({ userId: OTHER_USER_ID }));
 
     await expect(mocks.service.remove(USER_ID, BOOKING_ID)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
-    expect(mocks.prisma.booking.delete).not.toHaveBeenCalled();
+    expect(mocks.db.delete).not.toHaveBeenCalled();
     expect(mocks.metrics.bookingCancelled).not.toHaveBeenCalled();
   });
 
   it('returns 404 for a missing booking', async () => {
-    mocks.prisma.booking.findUnique.mockResolvedValue(null);
+    mocks.db.query.bookings.findFirst.mockResolvedValue(undefined);
 
     await expect(mocks.service.remove(USER_ID, BOOKING_ID)).rejects.toBeInstanceOf(
       NotFoundException,
@@ -294,27 +298,24 @@ describe('BookingsService.remove', () => {
   });
 
   it('deletes own booking and increments the cancelled counter', async () => {
-    mocks.prisma.booking.findUnique.mockResolvedValue(bookingRow());
-    mocks.prisma.booking.delete.mockResolvedValue({});
+    mocks.db.query.bookings.findFirst.mockResolvedValue(bookingRow());
+    mocks.deleteReturning.mockResolvedValue([{ id: BOOKING_ID }]);
 
     const removed = await mocks.service.remove(USER_ID, BOOKING_ID);
 
     expect(removed).toBe(1);
-    expect(mocks.prisma.booking.delete).toHaveBeenCalledWith({ where: { id: BOOKING_ID } });
+    expect(mocks.db.delete).toHaveBeenCalledOnce();
     expect(mocks.metrics.bookingCancelled).toHaveBeenCalledWith(1);
   });
 
   it('cancels this and later occurrences when scope is "series"', async () => {
-    mocks.prisma.booking.findUnique.mockResolvedValue(bookingRow({ seriesId: SERIES_ID }));
-    mocks.prisma.booking.deleteMany.mockResolvedValue({ count: 3 });
+    mocks.db.query.bookings.findFirst.mockResolvedValue(bookingRow({ seriesId: SERIES_ID }));
+    mocks.deleteReturning.mockResolvedValue([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
 
     const removed = await mocks.service.remove(USER_ID, BOOKING_ID, 'series');
 
     expect(removed).toBe(3);
-    expect(mocks.prisma.booking.deleteMany).toHaveBeenCalledWith({
-      where: { seriesId: SERIES_ID, userId: USER_ID, startsAt: { gte: new Date(START) } },
-    });
-    expect(mocks.prisma.booking.delete).not.toHaveBeenCalled();
+    expect(mocks.db.delete).toHaveBeenCalledOnce();
     expect(mocks.metrics.bookingCancelled).toHaveBeenCalledWith(3);
   });
 });

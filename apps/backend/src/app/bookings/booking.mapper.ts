@@ -1,11 +1,12 @@
 import type { BookingDto, MyBookingDto } from '@office/shared';
-import type { Booking } from '@prisma/client';
+
+import type { Booking } from '../../db/schema';
 
 export type BookingWithUser = Booking & { user: { id: string; name: string } };
 
 export type BookingWithRoom = Booking & { room: { id: string; name: string; floor: number } };
 
-/** Maps a Prisma booking row (with its author) to the shared API shape. */
+/** Maps a booking row (with its author) to the shared API shape. */
 export function toBookingDto(booking: BookingWithUser, requesterId: string): BookingDto {
   return {
     id: booking.id,
@@ -19,7 +20,7 @@ export function toBookingDto(booking: BookingWithUser, requesterId: string): Boo
   };
 }
 
-/** Maps a Prisma booking row (with its room) to the "My bookings" shape. */
+/** Maps a booking row (with its room) to the "My bookings" shape. */
 export function toMyBookingDto(booking: BookingWithRoom): MyBookingDto {
   return {
     id: booking.id,

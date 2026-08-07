@@ -4,6 +4,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -13,22 +14,24 @@ import type {
   MyNotificationDto,
   PastBookingsPageDto,
 } from '@office/shared';
-import { Prisma } from '@prisma/client';
+import { and, asc, desc, eq, gt, gte, isNotNull, lte } from 'drizzle-orm';
 
+import { DRIZZLE, type DrizzleDB } from '../db/database.module';
+import { isPgError, PG_EXCLUSION_VIOLATION } from '../../db/pg-errors';
+import { bookings, rooms, users } from '../../db/schema';
 import { MetricsService } from '../metrics/metrics.service';
-import { PrismaService } from '../prisma/prisma.service';
 import { addOfficeWeeks } from '../time/office-time';
 import { validateBookingSlot } from './booking-rules';
 import { toBookingDto, toMyBookingDto } from './booking.mapper';
 import { CreateBookingDto } from './dto/create-booking.dto';
 
-const ROOM_SELECT = { id: true, name: true, floor: true } as const;
-const USER_SELECT = { user: { select: { id: true, name: true } } } as const;
+// Columns selected for the room a "My bookings" row is rendered with.
+const ROOM_COLUMNS = { id: true, name: true, floor: true } as const;
 
 @Injectable()
 export class BookingsService {
   constructor(
-    private readonly prisma: PrismaService,
+    @Inject(DRIZZLE) private readonly db: DrizzleDB,
     private readonly metrics: MetricsService,
   ) {}
 
@@ -52,18 +55,19 @@ export class BookingsService {
       }
     });
 
-    // Booking requires a confirmed email (dev-mode confirmation flow).
-    const actor = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { emailConfirmedAt: true },
+    // Booking requires a confirmed email (dev-mode confirmation flow). Fetch the
+    // actor's id+name too, to attach as the created booking's author without a join.
+    const actor = await this.db.query.users.findFirst({
+      where: eq(users.id, userId),
+      columns: { id: true, name: true, emailConfirmedAt: true },
     });
     if (!actor?.emailConfirmedAt) {
       throw new ForbiddenException('Please confirm your email address before booking a room.');
     }
 
-    const room = await this.prisma.room.findUnique({
-      where: { id: dto.roomId },
-      select: { id: true },
+    const room = await this.db.query.rooms.findFirst({
+      where: eq(rooms.id, dto.roomId),
+      columns: { id: true },
     });
     if (!room) {
       throw new NotFoundException('Room not found');
@@ -73,28 +77,34 @@ export class BookingsService {
     const seriesId = repeatWeeks > 1 ? randomUUID() : null;
 
     try {
-      // One transaction: the EXCLUDE constraint guarantees no occurrence
-      // overlaps an existing booking, and the whole series is all-or-nothing.
-      // Of two concurrent requests for the same slot exactly one succeeds.
-      const created = await this.prisma.$transaction(
-        occurrences.map((occurrence) =>
-          this.prisma.booking.create({
-            data: {
+      // One transaction with a single multi-row insert: the EXCLUDE constraint
+      // guarantees no occurrence overlaps an existing booking, and the whole
+      // series is all-or-nothing. Of two concurrent requests for the same slot
+      // exactly one succeeds. RETURNING preserves VALUES order, so row 0 is the
+      // base (week 1) occurrence.
+      const created = await this.db.transaction((tx) =>
+        tx
+          .insert(bookings)
+          .values(
+            occurrences.map((occurrence) => ({
               roomId: dto.roomId,
               userId,
               title: dto.title,
               startsAt: occurrence.startsAt,
               endsAt: occurrence.endsAt,
               seriesId,
-            },
-            include: USER_SELECT,
-          }),
-        ),
+            })),
+          )
+          .returning(),
       );
       this.metrics.bookingCreated(created.length);
-      return { booking: toBookingDto(created[0], userId), createdCount: created.length };
+      const author = { id: actor.id, name: actor.name };
+      return {
+        booking: toBookingDto({ ...created[0], user: author }, userId),
+        createdCount: created.length,
+      };
     } catch (error) {
-      if (isExclusionViolation(error)) {
+      if (isPgError(error, PG_EXCLUSION_VIOLATION)) {
         this.metrics.bookingConflict();
         throw new ConflictException(
           repeatWeeks > 1
@@ -108,28 +118,30 @@ export class BookingsService {
 
   /** Upcoming (incl. in-progress) bookings of the user, nearest first. */
   async findMyUpcoming(userId: string): Promise<MyBookingDto[]> {
-    const bookings = await this.prisma.booking.findMany({
-      where: { userId, endsAt: { gt: new Date() } },
-      orderBy: { startsAt: 'asc' },
-      include: { room: { select: ROOM_SELECT } },
+    const rows = await this.db.query.bookings.findMany({
+      where: and(eq(bookings.userId, userId), gt(bookings.endsAt, new Date())),
+      orderBy: asc(bookings.startsAt),
+      with: { room: { columns: ROOM_COLUMNS } },
     });
-    return bookings.map(toMyBookingDto);
+    return rows.map(toMyBookingDto);
   }
 
   /** Finished bookings of the user, most recent first, offset-paginated. */
   async findMyPast(userId: string, offset: number, limit: number): Promise<PastBookingsPageDto> {
-    const where = { userId, endsAt: { lte: new Date() } };
-    const [bookings, total] = await this.prisma.$transaction([
-      this.prisma.booking.findMany({
+    const where = and(eq(bookings.userId, userId), lte(bookings.endsAt, new Date()));
+    // One transaction so the page and its total are a consistent snapshot.
+    const [rows, total] = await this.db.transaction(async (tx) => {
+      const items = await tx.query.bookings.findMany({
         where,
-        orderBy: { startsAt: 'desc' },
-        skip: offset,
-        take: limit,
-        include: { room: { select: ROOM_SELECT } },
-      }),
-      this.prisma.booking.count({ where }),
-    ]);
-    return { items: bookings.map(toMyBookingDto), total };
+        orderBy: desc(bookings.startsAt),
+        offset,
+        limit,
+        with: { room: { columns: ROOM_COLUMNS } },
+      });
+      const count = await tx.$count(bookings, where);
+      return [items, count] as const;
+    });
+    return { items: rows.map(toMyBookingDto), total };
   }
 
   /**
@@ -138,12 +150,16 @@ export class BookingsService {
    * The in-app bell/toast polls this; each row disappears once the booking ends.
    */
   async findMyNotifications(userId: string): Promise<MyNotificationDto[]> {
-    const bookings = await this.prisma.booking.findMany({
-      where: { userId, endNotifiedAt: { not: null }, endsAt: { gt: new Date() } },
-      orderBy: { endsAt: 'asc' },
-      include: { room: { select: { id: true, name: true } } },
+    const rows = await this.db.query.bookings.findMany({
+      where: and(
+        eq(bookings.userId, userId),
+        isNotNull(bookings.endNotifiedAt),
+        gt(bookings.endsAt, new Date()),
+      ),
+      orderBy: asc(bookings.endsAt),
+      with: { room: { columns: { id: true, name: true } } },
     });
-    return bookings.map((booking) => ({
+    return rows.map((booking) => ({
       bookingId: booking.id,
       title: booking.title,
       room: { id: booking.room.id, name: booking.room.name },
@@ -161,7 +177,7 @@ export class BookingsService {
     bookingId: string,
     scope: 'one' | 'series' = 'one',
   ): Promise<number> {
-    const booking = await this.prisma.booking.findUnique({ where: { id: bookingId } });
+    const booking = await this.db.query.bookings.findFirst({ where: eq(bookings.id, bookingId) });
     if (!booking) {
       throw new NotFoundException('Booking not found');
     }
@@ -170,35 +186,29 @@ export class BookingsService {
     }
 
     if (scope === 'series' && booking.seriesId) {
-      const { count } = await this.prisma.booking.deleteMany({
-        where: { seriesId: booking.seriesId, userId, startsAt: { gte: booking.startsAt } },
-      });
-      this.metrics.bookingCancelled(count);
-      return count;
+      const deleted = await this.db
+        .delete(bookings)
+        .where(
+          and(
+            eq(bookings.seriesId, booking.seriesId),
+            eq(bookings.userId, userId),
+            gte(bookings.startsAt, booking.startsAt),
+          ),
+        )
+        .returning({ id: bookings.id });
+      this.metrics.bookingCancelled(deleted.length);
+      return deleted.length;
     }
 
-    try {
-      await this.prisma.booking.delete({ where: { id: bookingId } });
-    } catch (error) {
+    const deleted = await this.db
+      .delete(bookings)
+      .where(eq(bookings.id, bookingId))
+      .returning({ id: bookings.id });
+    if (deleted.length === 0) {
       // Deleted concurrently between the check and the delete.
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
-        throw new NotFoundException('Booking not found');
-      }
-      throw error;
+      throw new NotFoundException('Booking not found');
     }
     this.metrics.bookingCancelled(1);
     return 1;
   }
-}
-
-/** Detects the PostgreSQL exclusion-constraint violation (SQLSTATE 23P01). */
-function isExclusionViolation(error: unknown): boolean {
-  if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    const meta = error.meta as { code?: string } | undefined;
-    return error.code === 'P2004' || meta?.code === '23P01' || error.message.includes('23P01');
-  }
-  if (error instanceof Prisma.PrismaClientUnknownRequestError) {
-    return error.message.includes('23P01') || error.message.includes('exclusion constraint');
-  }
-  return false;
 }

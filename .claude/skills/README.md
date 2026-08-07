@@ -8,7 +8,7 @@ don't re-derive the conventions. Each lives in `<skill>/SKILL.md`; the
 | --- | --- |
 | `implementing-a-feature` | adding/changing app code (backend module, frontend route/hook, `@office/shared`) |
 | `testing` | writing/running Vitest unit, backend supertest integration, or Playwright e2e |
-| `database-migrations` | changing `schema.prisma` or a migration, or judging migration safety |
+| `database-migrations` | changing the Drizzle schema or a migration, or judging migration safety |
 | `commits-and-prs` | writing a commit subject, naming a branch, opening/merging a PR |
 | `documentation` | editing README/`/docs`, writing an ADR, or applying the why-not-what comment rule |
 | `ci-workflows` | editing `.github/workflows` or `.github/actions` |
@@ -31,4 +31,4 @@ don't re-derive the conventions. Each lives in `<skill>/SKILL.md`; the
 
 Distilled from: `CONTRIBUTING.md`, `docs/Code-Style.md`, `docs/Decision-Log.md`,
 `biome.json`, `nx.json`, `apps/*/project.json`, `scripts/lint-commit-msg.sh`,
-`.github/workflows/ci.yml`, `apps/backend/prisma/`.
+`.github/workflows/ci.yml`, `apps/backend/src/db/`, `apps/backend/drizzle/`.

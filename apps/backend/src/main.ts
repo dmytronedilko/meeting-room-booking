@@ -11,8 +11,8 @@ import { configureApp } from './app/setup';
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    // trustProxy: behind Traefik the throttler and logs must see the real
-    // client IP from X-Forwarded-For.
+    // trustProxy: behind the Nginx proxy the throttler and logs must see the
+    // real client IP from X-Forwarded-For.
     new FastifyAdapter({ trustProxy: true }),
     { bufferLogs: true },
   );
@@ -23,7 +23,7 @@ async function bootstrap(): Promise<void> {
 
   // In dev mode the frontend (localhost:3000) talks to the API directly, so
   // CORS is required — with credentials, since auth travels in a cookie.
-  // In Docker both apps share one origin behind Traefik.
+  // In Docker both apps share one origin behind the Nginx proxy.
   if (process.env['NODE_ENV'] !== 'production') {
     app.enableCors({ origin: true, credentials: true });
   }

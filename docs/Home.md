@@ -9,7 +9,7 @@
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
 ![NestJS](https://img.shields.io/badge/NestJS-11-E0234E?logo=nestjs&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
-![Prisma](https://img.shields.io/badge/Prisma-7-2D3748?logo=prisma&logoColor=white)
+![Drizzle](https://img.shields.io/badge/Drizzle-ORM-C5F74F?logo=drizzle&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
 ![Code style](https://img.shields.io/badge/code%20style-Biome-60A5FA?logo=biome&logoColor=white)
 
@@ -52,8 +52,8 @@ are stored in **UTC** in the database.
 | **Monorepo** | Nx (integrated), TypeScript `strict` everywhere, **no `any`** |
 | **Frontend** | Next.js 16 (App Router), React 19, Tailwind CSS 4, shadcn/ui, lucide-react, sonner, next-themes, TanStack Query |
 | **Backend** | NestJS 11 (Fastify adapter), class-validator DTOs, Swagger, JWT auth, `@nestjs/throttler` |
-| **Database** | PostgreSQL 16 + Prisma 7 (SQL migrations, `btree_gist` EXCLUDE constraint) |
-| **Proxy** | Traefik — the single entry point (`:80`) |
+| **Database** | PostgreSQL 16 + Drizzle ORM (SQL migrations, `btree_gist` EXCLUDE constraint) |
+| **Proxy** | Nginx — the single entry point (`:80`) |
 | **Monitoring** | Prometheus + Grafana (pre-provisioned dashboard) |
 | **Logging** | Structured JSON via `nestjs-pino` → ELK (Filebeat → Elasticsearch → Kibana) |
 | **Tests** | Vitest (unit), supertest (integration), Playwright (e2e) |
@@ -67,7 +67,7 @@ flowchart LR
     Browser(["🧑‍💻 Browser"])
 
     subgraph stack["Docker Compose"]
-        Proxy["Traefik :80<br/>single entry point"]
+        Proxy["Nginx :80<br/>single entry point"]
         FE["Frontend<br/>Next.js :3000"]
         BE["Backend<br/>NestJS :3001"]
         DB[("PostgreSQL 16")]
@@ -78,7 +78,7 @@ flowchart LR
     Browser -->|http://localhost| Proxy
     Proxy -->|/api/*| BE
     Proxy -->|everything else| FE
-    BE -->|Prisma / pg| DB
+    BE -->|Drizzle / pg| DB
     BE -.->|metrics + JSON logs| Obs
 ```
 
@@ -99,7 +99,7 @@ For hot-reload dev mode and the `.env` reference, see **[Getting Started](Gettin
 
 | Surface | URL | Notes |
 | --- | --- | --- |
-| **App** | http://localhost | via Traefik |
+| **App** | http://localhost | via Nginx |
 | **API (Swagger)** | http://localhost/api/docs | interactive REST docs |
 | **Grafana** | http://localhost:3002 | `admin` / `admin`, dashboard pre-provisioned |
 | **Prometheus** | http://localhost:9090 | scrapes `backend:3001/metrics` |

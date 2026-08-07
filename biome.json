@@ -14,7 +14,7 @@
       "!**/playwright-report",
       "!**/test-results",
       "!**/*.css",
-      "!apps/backend/prisma/migrations",
+      "!apps/backend/drizzle",
       "!infra/grafana/dashboards"
     ]
   },

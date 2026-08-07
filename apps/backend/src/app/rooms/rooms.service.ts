@@ -1,17 +1,21 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { BookingDto, RoomDto } from '@office/shared';
+import { and, asc, eq, gte, lt } from 'drizzle-orm';
 
+import { DRIZZLE, type DrizzleDB } from '../db/database.module';
+import { bookings, rooms } from '../../db/schema';
 import { toBookingDto } from '../bookings/booking.mapper';
-import { PrismaService } from '../prisma/prisma.service';
 import { officeDayRangeUtc } from '../time/office-time';
 
 @Injectable()
 export class RoomsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(@Inject(DRIZZLE) private readonly db: DrizzleDB) {}
 
   async findAll(): Promise<RoomDto[]> {
-    const rooms = await this.prisma.room.findMany({ orderBy: [{ floor: 'asc' }, { name: 'asc' }] });
-    return rooms.map((room) => ({
+    const roomRows = await this.db.query.rooms.findMany({
+      orderBy: [asc(rooms.floor), asc(rooms.name)],
+    });
+    return roomRows.map((room) => ({
       id: room.id,
       name: room.name,
       floor: room.floor,
@@ -30,20 +34,24 @@ export class RoomsService {
     days: number,
     requesterId: string,
   ): Promise<BookingDto[]> {
-    const room = await this.prisma.room.findUnique({
-      where: { id: roomId },
-      select: { id: true },
+    const room = await this.db.query.rooms.findFirst({
+      where: eq(rooms.id, roomId),
+      columns: { id: true },
     });
     if (!room) {
       throw new NotFoundException('Room not found');
     }
 
     const { start, end } = officeDayRangeUtc(date, days);
-    const bookings = await this.prisma.booking.findMany({
-      where: { roomId, startsAt: { gte: start, lt: end } },
-      orderBy: { startsAt: 'asc' },
-      include: { user: { select: { id: true, name: true } } },
+    const roomBookings = await this.db.query.bookings.findMany({
+      where: and(
+        eq(bookings.roomId, roomId),
+        gte(bookings.startsAt, start),
+        lt(bookings.startsAt, end),
+      ),
+      orderBy: asc(bookings.startsAt),
+      with: { user: { columns: { id: true, name: true } } },
     });
-    return bookings.map((booking) => toBookingDto(booking, requesterId));
+    return roomBookings.map((booking) => toBookingDto(booking, requesterId));
   }
 }

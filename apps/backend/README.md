@@ -3,7 +3,7 @@
 The booking API: JWT auth, rooms, bookings with database-level overlap
 protection, Prometheus metrics and structured JSON logging. Runs on
 `@nestjs/platform-fastify` (`FastifyAdapter({ trustProxy: true })` for real
-client IPs behind Traefik) under the global `/api` prefix (except `GET /health`
+client IPs behind the Nginx proxy) under the global `/api` prefix (except `GET /health`
 and `GET /metrics`).
 
 - Swagger UI: `GET /api/docs`
@@ -19,14 +19,14 @@ flowchart TD
     App --> Rooms["RoomsModule<br/>rooms & schedules"]
     App --> Bookings["BookingsModule<br/>create / cancel"]
     App --> Metrics["MetricsModule<br/>/metrics + interceptor"]
-    App --> Prisma["PrismaModule (global)<br/>PrismaService"]
+    App --> DB["DatabaseModule (global)<br/>Drizzle over pg pool"]
     App --> Health["HealthController<br/>/health"]
 
     Bookings -- "business counters" --> Metrics
     Bookings -- "validateBookingSlot()" --> Rules["booking-rules.ts<br/><i>single source of truth</i>"]
-    Auth --> Prisma
-    Rooms --> Prisma
-    Bookings --> Prisma
+    Auth --> DB
+    Rooms --> DB
+    Bookings --> DB
 
     App -. "APP_GUARD" .-> Guard["JwtAuthGuard"]
     App -. "APP_FILTER" .-> Filter["AllExceptionsFilter<br/>{ statusCode, message, error }"]
@@ -44,14 +44,14 @@ flowchart LR
     G -- "yes" --> I["HttpMetricsInterceptor<br/>duration + counter"]
     I --> V["ValidationPipe<br/>class-validator DTOs"]
     V -- "invalid" --> E400["400"]
-    V --> C["Controller (thin)"] --> S["Service (business logic)"] --> P["PrismaService"]
+    V --> C["Controller (thin)"] --> S["Service (business logic)"] --> P["Drizzle client (DRIZZLE)"]
     S -- "throws HttpException" --> F["AllExceptionsFilter"]
     E401 --> F
     E400 --> F
 ```
 
 `/auth/*` additionally passes `ThrottlerGuard` (10 req/min per IP by default;
-real client IPs via the adapter's `trustProxy` behind Traefik).
+real client IPs via the adapter's `trustProxy` behind the Nginx proxy).
 
 **Session cookie.** Login/register set `token` (`HttpOnly; SameSite=Lax;
 Path=/; Max-Age=86400` — matching the 24h JWT TTL); `POST /auth/logout`
@@ -177,7 +177,7 @@ npx nx run backend:test-integration  # supertest vs booking_test DB
 npx nx run backend:seed          # idempotent demo data
 ```
 
-The Docker entrypoint runs `prisma migrate deploy` → `node seed.js` →
+The Docker entrypoint runs `node migrate.js` → `node seed.js` →
 `node main.js`. Config comes from env vars (`DATABASE_URL`, `JWT_SECRET`,
 `JWT_TTL`, `THROTTLE_TTL_MS`, `THROTTLE_LIMIT`, `LOG_LEVEL`, `PORT`); see
 `.env.example` in the repo root.

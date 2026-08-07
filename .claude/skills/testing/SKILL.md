@@ -6,7 +6,7 @@ description: >-
   in apps/backend/e2e (supertest + a real Postgres), or the Playwright browser
   e2e in the root /e2e against the docker-compose stack. Covers the three tiers,
   the e2e naming trap, how to run one test, and how CI runs them. Does NOT cover
-  Prisma migration authoring (see database-migrations) or CI job wiring (see
+  Drizzle migration authoring (see database-migrations) or CI job wiring (see
   ci-workflows).
 ---
 
@@ -28,7 +28,7 @@ browser** suite. "e2e" means different things by directory.
 ## 2. Backend integration — supertest + Postgres
 - Config: `apps/backend/vitest.integration.config.ts`. Files:
   `apps/backend/e2e/**/*.e2e-spec.ts`. `globalSetup: e2e/global-setup.ts` runs
-  `npx prisma migrate deploy` against `TEST_DATABASE_URL` (the `booking_test` DB)
+  the Drizzle migrator against `TEST_DATABASE_URL` (the `booking_test` DB)
   before the suite; `fileParallelism: false`.
 - Pattern: boot the app via `Test.createTestingModule`, drive it with
   `request(app.getHttpServer())`. **No factory library** — set up state through
@@ -38,7 +38,7 @@ browser** suite. "e2e" means different things by directory.
 
 ## 3. Browser e2e — Playwright, chromium only
 - Config: `playwright.config.ts`, `testDir: ./e2e`. Needs the full stack on :80
-  (Traefik): `docker compose up -d --wait db backend frontend traefik`, then
+  (Nginx): `docker compose up -d --wait db backend frontend nginx`, then
   `npm run test:e2e`. `E2E_BASE_URL` overrides the base (default `http://localhost`).
 - CI: `retries: 2`, `workers: 1`, list+html reporters. Only **chromium** is
   installed — don't add firefox/webkit specs without installing the browser.

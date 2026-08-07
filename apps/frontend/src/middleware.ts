@@ -29,7 +29,7 @@ function isTokenAlive(token: string): boolean {
 /**
  * Server-side route protection. The JWT travels in an HttpOnly cookie, so the
  * Next.js server sees it on every request (same host in dev, same origin
- * behind Traefik in Docker) and can redirect before any protected page renders —
+ * behind the Nginx proxy in Docker) and can redirect before any protected page renders —
  * no client-side guard, no flash of skeletons for anonymous visitors.
  */
 export function middleware(request: NextRequest): NextResponse {

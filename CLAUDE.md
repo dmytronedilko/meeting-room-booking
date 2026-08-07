@@ -12,7 +12,7 @@ Read the relevant `SKILL.md` first instead of re-deriving the conventions:
 | --- | --- |
 | App/feature code (backend module, frontend route/hook, shared contract) | `implementing-a-feature` |
 | Unit / integration / Playwright tests | `testing` |
-| Prisma schema or a migration | `database-migrations` |
+| Drizzle schema or a migration | `database-migrations` |
 | Commit message, branch name, PR | `commits-and-prs` |
 | README / `/docs` / an ADR / comment style | `documentation` |
 | `.github/workflows` or `.github/actions` | `ci-workflows` |
@@ -25,7 +25,7 @@ Read the relevant `SKILL.md` first instead of re-deriving the conventions:
   never bypass a real failure with `--no-verify`.
 - Never weaken a security gate to make it pass; every GitHub action is SHA-pinned.
 - Never hand-edit `package-lock.json` or an applied
-  `apps/backend/prisma/migrations/**`.
+  `apps/backend/drizzle/**` migration (or its `meta/` journal).
 
 ## Setup & commands
 The Node version is pinned in `.nvmrc`; the local stack runs via `docker compose`.

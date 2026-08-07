@@ -6,7 +6,7 @@ description: >-
   route/component/hook under apps/frontend/src, or shared contracts/constants in
   libs/shared (@office/shared). Covers where code goes, which Nx targets to run,
   the TypeScript/Biome rules that actually bite here, and files that must never be
-  hand-edited. Does NOT cover writing tests (see testing), Prisma schema or
+  hand-edited. Does NOT cover writing tests (see testing), the Drizzle schema or
   migrations (see database-migrations), or .github workflows (see ci-workflows).
 ---
 
@@ -59,7 +59,7 @@ entry point (`apps/backend/src/seed/seed.ts`, target `nx run backend:seed`).
 - Formatting is Biome's job — `npm run format`, don't hand-format.
 
 ## Never hand-edit
-- `apps/backend/prisma/migrations/**` — immutable once created (database-migrations).
+- `apps/backend/drizzle/**` — applied migrations are immutable (database-migrations).
 - `package-lock.json` — change deps via `npm install` (dependencies-and-images).
 - Generated output: `dist/`, `.next/`, `coverage/`, `.nx/`, the generated Prisma
   client. Biome and Sonar already ignore these.

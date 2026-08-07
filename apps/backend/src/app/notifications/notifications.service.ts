@@ -1,8 +1,10 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { and, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
 
+import { DRIZZLE, type DrizzleDB } from '../db/database.module';
+import { bookings } from '../../db/schema';
 import { MetricsService } from '../metrics/metrics.service';
-import { PrismaService } from '../prisma/prisma.service';
 
 /** How often the scheduler scans for bookings that are about to end. */
 const TICK_MS = 60_000;
@@ -25,7 +27,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
   private timer?: NodeJS.Timeout;
 
   constructor(
-    private readonly prisma: PrismaService,
+    @Inject(DRIZZLE) private readonly db: DrizzleDB,
     private readonly metrics: MetricsService,
     config: ConfigService,
   ) {
@@ -65,9 +67,13 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
    */
   async processDueNotifications(now: Date = new Date()): Promise<number> {
     const windowEnd = new Date(now.getTime() + this.notifyBeforeMinutes * 60_000);
-    const due = await this.prisma.booking.findMany({
-      where: { endNotifiedAt: null, endsAt: { gt: now, lte: windowEnd } },
-      include: { room: { select: { name: true } } },
+    const due = await this.db.query.bookings.findMany({
+      where: and(
+        isNull(bookings.endNotifiedAt),
+        gt(bookings.endsAt, now),
+        lte(bookings.endsAt, windowEnd),
+      ),
+      with: { room: { columns: { name: true } } },
     });
     if (due.length === 0) {
       return 0;
@@ -76,9 +82,13 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     // Keep only bookings whose room is needed right after: some booking starts
     // exactly when this one ends. Cancellation deletes rows, so if this booking
     // or its successor is cancelled the match disappears and nothing fires.
-    const successors = await this.prisma.booking.findMany({
-      where: { OR: due.map((booking) => ({ roomId: booking.roomId, startsAt: booking.endsAt })) },
-      select: { roomId: true, startsAt: true },
+    const successors = await this.db.query.bookings.findMany({
+      where: or(
+        ...due.map((booking) =>
+          and(eq(bookings.roomId, booking.roomId), eq(bookings.startsAt, booking.endsAt)),
+        ),
+      ),
+      columns: { roomId: true, startsAt: true },
     });
     const nextSlotTaken = new Set(successors.map((s) => `${s.roomId}@${s.startsAt.getTime()}`));
     const notifiable = due.filter((b) => nextSlotTaken.has(`${b.roomId}@${b.endsAt.getTime()}`));
@@ -91,10 +101,15 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       this.deliver(booking.userId, booking.id, booking.title, booking.room.name, minutesLeft);
     }
 
-    await this.prisma.booking.updateMany({
-      where: { id: { in: notifiable.map((booking) => booking.id) } },
-      data: { endNotifiedAt: now },
-    });
+    await this.db
+      .update(bookings)
+      .set({ endNotifiedAt: now })
+      .where(
+        inArray(
+          bookings.id,
+          notifiable.map((booking) => booking.id),
+        ),
+      );
     this.metrics.bookingEndNotified(notifiable.length);
     return notifiable.length;
   }

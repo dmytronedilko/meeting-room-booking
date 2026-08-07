@@ -2,14 +2,12 @@
 FROM node:26.5.1-alpine AS deps
 WORKDIR /workspace
 COPY package.json package-lock.json ./
-# The postinstall hook runs `prisma generate`, which needs the schema.
-COPY apps/backend/prisma ./apps/backend/prisma
 RUN npm ci --no-audit --no-fund
 
 # ---------- Stage 2: build with Nx (Next.js standalone output) ----------
 FROM deps AS build
 ENV NX_DAEMON=false
-# Baked into the client bundle at build time. `/api` = same origin via Traefik.
+# Baked into the client bundle at build time. `/api` = same origin via the Nginx proxy.
 ARG NEXT_PUBLIC_API_URL=/api
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 COPY . .

@@ -47,7 +47,7 @@ supersede one, flip its status **and** its Index cell to 🔄 and link the new A
 ## Comments: why, not what
 This repo is **deliberately, heavily commented** — that's intentional, not clutter.
 - ✅ explain a constraint / trade-off / non-obvious edge (see the comments in
-  `.github/workflows/ci.yml` and `apps/backend/prisma/schema.prisma`).
+  `.github/workflows/ci.yml` and `apps/backend/src/db/schema.ts`).
 - ❌ don't restate the next line (`// increment counter`).
 - On cleanup, **strip only name-echoing comments**; keep every "why" comment —
   they're the project's institutional memory (ADR-0014).

@@ -3,7 +3,7 @@ name: DAST (ZAP baseline)
 # Dynamic analysis is deliberately kept OFF the per-PR pipeline (it needs the
 # whole app running and is comparatively slow) and runs nightly / on demand
 # instead. It boots the real Docker stack — the same way the e2e job does — and
-# runs an OWASP ZAP *baseline* (passive) scan against the Traefik proxy.
+# runs an OWASP ZAP *baseline* (passive) scan against the Nginx proxy.
 on:
   schedule:
     - cron: '0 3 * * *' # 03:00 UTC, nightly
@@ -47,7 +47,7 @@ jobs:
       - name: Start the app stack
         # Same four services the e2e job uses; the backend entrypoint migrates +
         # seeds; --wait blocks until db and backend report healthy.
-        run: docker compose up -d --wait --wait-timeout 180 db backend frontend traefik
+        run: docker compose up -d --wait --wait-timeout 180 db backend frontend nginx
       - name: ZAP baseline scan
         uses: zaproxy/action-baseline@v0.14.0
         with:

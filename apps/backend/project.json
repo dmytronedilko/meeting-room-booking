@@ -18,6 +18,10 @@
           {
             "entryName": "seed",
             "entryPath": "apps/backend/src/seed/seed.ts"
+          },
+          {
+            "entryName": "migrate",
+            "entryPath": "apps/backend/src/db/migrate.ts"
           }
         ],
         "tsConfig": "apps/backend/tsconfig.app.json",

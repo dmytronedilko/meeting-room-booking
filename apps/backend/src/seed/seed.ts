@@ -9,10 +9,13 @@
  */
 import 'dotenv/config';
 
-import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
+
+import { isPgError, PG_EXCLUSION_VIOLATION } from '../db/pg-errors';
+import { bookings, rooms, users } from '../db/schema';
 
 // Kept in sync with libs/shared OFFICE_TIME_ZONE; duplicated so the seed stays
 // dependency-light (runs both via nx and as a compiled Docker bundle).
@@ -22,7 +25,8 @@ const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
   throw new Error('DATABASE_URL is not set');
 }
-const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString }) });
+const pool = new Pool({ connectionString });
+const db = drizzle(pool);
 
 function seedId(index: number): string {
   return `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
@@ -181,22 +185,26 @@ function officeSlotToUtc(dayOffset: number, time: string): Date {
 
 async function main(): Promise<void> {
   for (const room of ROOMS) {
-    await prisma.room.upsert({
-      where: { id: room.id },
-      update: { name: room.name, floor: room.floor, capacity: room.capacity },
-      create: room,
-    });
+    await db
+      .insert(rooms)
+      .values(room)
+      .onConflictDoUpdate({
+        target: rooms.id,
+        set: { name: room.name, floor: room.floor, capacity: room.capacity },
+      });
   }
 
   const passwordHash = await bcrypt.hash('password123', 10);
   // Seeded users are pre-confirmed so the documented credentials can book at once.
   const emailConfirmedAt = new Date();
   for (const user of USERS) {
-    await prisma.user.upsert({
-      where: { id: user.id },
-      update: { name: user.name, email: user.email, emailConfirmedAt },
-      create: { ...user, passwordHash, emailConfirmedAt },
-    });
+    await db
+      .insert(users)
+      .values({ ...user, passwordHash, emailConfirmedAt })
+      .onConflictDoUpdate({
+        target: users.id,
+        set: { name: user.name, email: user.email, emailConfirmedAt },
+      });
   }
 
   let created = 0;
@@ -213,15 +221,14 @@ async function main(): Promise<void> {
       seriesId: booking.seriesId ?? null,
     };
     try {
-      await prisma.booking.upsert({
-        where: { id: booking.id },
-        update: data,
-        create: { id: booking.id, ...data },
-      });
+      await db
+        .insert(bookings)
+        .values({ id: booking.id, ...data })
+        .onConflictDoUpdate({ target: bookings.id, set: data });
       created += 1;
     } catch (error) {
       // A user-created booking already occupies the slot (exclusion constraint).
-      if (error instanceof Error && error.message.includes('23P01')) {
+      if (isPgError(error, PG_EXCLUSION_VIOLATION)) {
         skipped += 1;
         continue;
       }
@@ -239,4 +246,4 @@ main()
     console.error('Seed failed:', error);
     process.exitCode = 1;
   })
-  .finally(() => prisma.$disconnect());
+  .finally(() => pool.end());

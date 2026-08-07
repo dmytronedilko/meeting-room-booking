@@ -31,7 +31,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-booking}?schema=public
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       JWT_TTL: 24h
-      # In Docker the app is reached through the Traefik proxy on :80.
+      # In Docker the app is reached through the Nginx proxy on :80.
       APP_URL: ${APP_URL:-http://localhost}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       PORT: '3001'
@@ -41,19 +41,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # Not published to the host: reachable only through the Traefik proxy.
+    # Not published to the host: reachable only through the Nginx proxy.
     expose:
       - '3001'
-    labels:
-      # /api/* → this service. PathPrefix forwards the path unchanged (no strip),
-      # so the Nest global prefix `api` still matches. Priority beats the
-      # frontend catch-all router below.
-      - 'traefik.enable=true'
-      - 'traefik.http.routers.backend.rule=PathPrefix(`/api`)'
-      - 'traefik.http.routers.backend.entrypoints=web'
-      - 'traefik.http.routers.backend.priority=100'
-      - 'traefik.http.routers.backend.middlewares=secure-headers@file'
-      - 'traefik.http.services.backend.loadbalancer.server.port=3001'
     healthcheck:
       test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3001/health || exit 1']
       interval: 10s
@@ -76,61 +66,24 @@ services:
         condition: service_healthy
     expose:
       - '3000'
-    labels:
-      # Catch-all: everything that isn't /api/* goes to the Next.js app. Lowest
-      # priority so the backend's /api router always wins the overlap.
-      - 'traefik.enable=true'
-      - 'traefik.http.routers.frontend.rule=PathPrefix(`/`)'
-      - 'traefik.http.routers.frontend.entrypoints=web'
-      - 'traefik.http.routers.frontend.priority=1'
-      - 'traefik.http.routers.frontend.middlewares=secure-headers@file'
-      - 'traefik.http.services.frontend.loadbalancer.server.port=3000'
 
-  # Read-only Docker API for Traefik's provider. This sidecar is the only thing
-  # that mounts the Docker socket; it exposes just the endpoints Traefik needs
-  # (containers + networks, no writes) and sits on an internal-only network, so
-  # Traefik never touches the socket itself. See ADR-0020.
-  socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0
-    environment:
-      CONTAINERS: 1
-      NETWORKS: 1
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - socket-proxy
-
-  # The single entry point on :80 (replaces the old nginx `proxy`). Routes are
-  # declared as labels on the backend/frontend services above; discovery is via
-  # the socket-proxy. Dashboard on 127.0.0.1:8080, metrics on :8082 (internal).
-  traefik:
-    # v3.7+: the Docker provider negotiates the API version via the proxy's
-    # /_ping (older v3.1 defaulted to API 1.24, which Docker Engine 29 rejects —
-    # its MinAPIVersion is 1.40).
-    image: traefik:v3.7.10
+  # The single entry point on :80. Routes live in infra/nginx/nginx.conf:
+  # /api/* → backend, everything else → the frontend. See ADR-0023.
+  nginx:
+    image: nginx:1.30.4-alpine
     ports:
       - '80:80'
-      # TLS entrypoint — no cert is served until a resolver is enabled in
-      # infra/traefik/traefik.yml (templated for a real domain).
-      - '443:443'
-      # Dashboard, bound to localhost so it is never reachable off-box.
-      - '127.0.0.1:8080:8080'
     volumes:
-      - ./infra/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
-      - ./infra/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
-      - traefik-acme:/letsencrypt
-    networks:
-      - default
-      - socket-proxy
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      socket-proxy:
-        condition: service_started
       backend:
         condition: service_healthy
       frontend:
         condition: service_started
     healthcheck:
-      test: ['CMD', 'traefik', 'healthcheck', '--ping']
+      # `wget` is bundled in nginx:alpine (busybox); gates dependents on the edge
+      # actually serving.
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -226,13 +179,3 @@ volumes:
   grafana-data:
   es-data:
   filebeat-data:
-  traefik-acme:
-
-networks:
-  # The implicit app network — every service except the socket-proxy sits here.
-  default:
-  # Isolates the Docker-socket sidecar together with Traefik. `internal: true`
-  # means no route to the outside world, shrinking the blast radius of the one
-  # container that can see the Docker socket.
-  socket-proxy:
-    internal: true

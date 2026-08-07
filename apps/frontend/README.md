@@ -84,7 +84,7 @@ src/
 
 | Variable | Dev | Docker |
 | --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | `http://localhost:3001/api` | `/api` (baked at build time via build arg; same origin behind Traefik) |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:3001/api` | `/api` (baked at build time via build arg; same origin behind the Nginx proxy) |
 
 ## Running & testing
 
@@ -96,4 +96,4 @@ npx nx lint frontend
 ```
 
 The Docker image serves the Next standalone bundle (`node apps/frontend/server.js`)
-on port 3000, reachable only through the Traefik proxy.
+on port 3000, reachable only through the Nginx proxy.

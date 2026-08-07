@@ -3,8 +3,8 @@ import { defineConfig, devices } from '@playwright/test';
 /**
  * Browser e2e for the frontend. The suite drives the real app end-to-end
  * (Next.js UI → Nest API → Postgres), so the full stack must be reachable at
- * `E2E_BASE_URL` — by default the Traefik proxy that docker-compose publishes on
- * :80. Locally: `docker compose up -d --wait db backend frontend traefik`, then
+ * `E2E_BASE_URL` — by default the Nginx proxy that docker-compose publishes on
+ * :80. Locally: `docker compose up -d --wait db backend frontend nginx`, then
  * `npm run test:e2e`. (The backend API/integration suite lives separately in
  * `apps/backend/e2e`.)
  */

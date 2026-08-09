@@ -1,0 +1,33 @@
+node_modules
+dist
+tmp
+coverage
+*.tsbuildinfo
+
+# Nx
+.nx/cache
+.nx/workspace-data
+
+# Next.js
+.next
+out
+next-env.d.ts
+
+# Playwright
+/playwright-report
+/test-results
+/blob-report
+/playwright/.cache
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+
+# Logs
+*.log

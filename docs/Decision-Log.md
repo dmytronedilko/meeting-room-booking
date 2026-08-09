@@ -276,16 +276,24 @@ first, build later** — **① Sanity & Deps** (Biome, gitleaks, commit-lint, Sn
 SCA) → **② Test & Analysis** (Vitest coverage, CodeQL, SonarQube — all on the
 source) → **③ Build & push images** (both Docker images to GHCR `:sha`) →
 **④ Container scan + Integration** → **⑤ E2E**. The image is **built once** in
-Stage 3 and pulled downstream (no rebuilds). External scanners are
-**token-guarded**: they enforce when their secret is present and skip green
-otherwise, so fork PRs stay healthy.
+Stage 3 and pulled downstream (no rebuilds). The external scanners (Snyk SCA,
+Snyk container, SonarQube) are **advisory / non-blocking**: they scan and report
+when their secret is present and skip cleanly otherwise, and are **decoupled**
+from the required build/test jobs — so a missing token (or a fork / Dependabot
+PR with no secret access) never blocks a merge or cascades a skip. The build
+gates on lint/unit/SAST only.
 **Alternatives.** One giant job (no parallelism, rebuilds); build in Stage 2 in
 parallel with the tests (fastest time-to-image, but wastes a build on bad source
 and leaves a stray `:sha` image in GHCR); scanners that hard-fail without secrets
 (breaks forks).
-**Consequences.** Strong gates, no double builds, and no image built unless every
-source gate is green. Local `.githooks` mirror the fast checks; a `--no-verify`
+**Consequences.** Strong gates, no double builds, and no image built unless
+lint/unit/SAST are green. Local `.githooks` mirror the fast checks; a `--no-verify`
 bypass is still caught in Stage 1. DAST (ZAP) is a separate nightly workflow.
+**Revised 2026-08-09.** The scanners were made advisory and decoupled from the
+critical path. They previously hard-failed a trusted run whose secret was absent,
+which cascade-blocked *every* PR while the tokens were unconfigured — and broke
+Dependabot PRs, which receive no Actions secrets. Re-add them to the required
+status checks once the tokens are set to restore hard gating.
 
 ### ADR-0016 · Snyk gates on CRITICAL severity only
 **Status:** ✅ Accepted · **Date:** 2026-08-02
@@ -294,9 +302,12 @@ bypass is still caught in Stage 1. DAST (ZAP) is a separate nightly workflow.
 began failing CI with no clean fix — e.g. `nanoid` (via `next › postcss`), fixed
 only in nanoid 5.x, which is ESM-only and incompatible with postcss 8. This
 blocked all merges for issues with no actionable upgrade.
-**Decision.** Both Snyk gates (SCA + Container) run `--severity-threshold=critical`.
-High/medium/low are still **scanned and logged** but no longer **block** the
-build. Team policy: gate CI on critical only; triage lower severities out-of-band.
+**Decision.** Both Snyk scans (SCA + Container) run `--severity-threshold=critical`.
+High/medium/low are still **scanned and logged** but never block. Per the
+2026-08-09 revision to [ADR-0015](#adr-0015--five-stage-devsecops-ci-build-once-guarded-scanners),
+Snyk is **advisory / non-blocking** overall (decoupled from the required checks);
+promote it back to a required gate once `SNYK_TOKEN` is configured. Team policy:
+gate on critical only; triage lower severities out-of-band.
 **Alternatives.** Per-vuln `.snyk` ignores (endless churn as new CVEs land);
 pinning incompatible transitive versions (breaks the build); keep `high`
 (permanently red on un-fixable transitives).

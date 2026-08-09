@@ -1,0 +1,13 @@
+#!/bin/sh
+#
+# commit-msg: validate the commit subject against Conventional Commits.
+# Delegates to scripts/lint-commit-msg.sh so the rules stay identical to CI.
+# Bypass in a pinch with `git commit --no-verify` — CI re-checks the PR anyway.
+
+msg_file=$1
+root=$(git rev-parse --show-toplevel)
+
+# First meaningful line: drop git's comment lines (#) and blanks, take line 1.
+subject=$(grep -vE '^[[:space:]]*(#|$)' "$msg_file" | head -n1)
+
+exec "$root/scripts/lint-commit-msg.sh" "$subject"

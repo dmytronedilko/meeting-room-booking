@@ -1,0 +1,49 @@
+#!/bin/sh
+#
+# Pre-commit: only the fast, staged-file checks — it must finish in seconds.
+# Everything here is ALSO enforced in CI (.github/workflows/ci.yml), so a
+# `git commit --no-verify` bypass is still caught server-side.
+#
+#   • Biome format + safe lint fixes (staged files)  → CI "Lint" job
+#   • trailing-whitespace / conflict-marker net       → CI "Lint" job
+#   • secret scan (staged, if gitleaks installed)     → CI "Secrets" job
+# Commit-message shape is validated separately in .githooks/commit-msg.
+#
+# Heavy work (unit/integration/e2e tests, builds, coverage, SAST/DAST) lives in
+# CI only — never in this hook.
+#
+# Enabled via core.hooksPath=.githooks, set by the "prepare" npm script on
+# install (or run `git config core.hooksPath .githooks` manually).
+
+set -e
+
+if ! command -v npx >/dev/null 2>&1; then
+  echo "pre-commit: Node/npx not on PATH — skipping local checks (try 'nvm use'). CI still runs them." >&2
+  exit 0
+fi
+
+echo "▶ pre-commit: Biome (format + safe lint fixes) on staged files…"
+# Fix formatting + safe lint issues on the staged files, then re-stage the fixes.
+# Any remaining (unfixable) lint error makes biome exit non-zero and blocks the commit.
+npx biome check --staged --write --no-errors-on-unmatched
+# Re-stage the files Biome may have rewritten. Guarded so xargs never runs on an
+# empty list (portable across BSD/GNU xargs); -z/-0 keeps odd filenames safe.
+# Caveat: for a file staged with extra unstaged edits, this folds those in too —
+# the usual lint-staged trade-off, accepted here for simplicity.
+if [ -n "$(git diff --cached --name-only --diff-filter=ACM)" ]; then
+  git diff --cached --name-only -z --diff-filter=ACM | xargs -0 git add --
+fi
+
+echo "▶ pre-commit: whitespace check…"
+# Trailing whitespace / leftover conflict markers on files Biome doesn't format
+# (Markdown, YAML, shell, …). Non-mutating: it rejects and the dev fixes.
+git diff --cached --check
+
+echo "▶ pre-commit: secret scan…"
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --redact --no-banner
+else
+  echo "  gitleaks not installed — skipping local secret scan (CI still runs it)." >&2
+fi
+
+echo "✓ pre-commit checks passed."

@@ -109,6 +109,6 @@
     "typescript": "^6.0.3",
     "unplugin-swc": "^1.5.1",
     "vite": "^8.2.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   }
 }
